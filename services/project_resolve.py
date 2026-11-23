@@ -11,11 +11,12 @@ Search order:
    not there, that is the answer, nothing else is searched.
 2. ``current`` — the project this tab already has open, when its directory name matches.
    A no-op re-entry can never be ambiguous, so it short-circuits.
-3. ``prefs.project_base_path`` — the base the landing page is pointed at.
-4. every ``prefs.recent_project_roots`` entry.
-5. the config's ``DefaultProjectBase``.
+3. ``prefs.project_base_path`` — the base new projects are made in.
+4. every ``prefs.overview_bases`` entry — the bases the projects roster lists.
+5. every ``prefs.recent_project_roots`` entry.
+6. the config's ``DefaultProjectBase``.
 
-Bases 3-5 are searched *together*, not first-wins: two distinct directories holding a
+Bases 3-6 are searched *together*, not first-wins: two distinct directories holding a
 project of the same name is a real ambiguity and gets reported (``PROJECT_AMBIGUOUS``
 plus the candidate paths) rather than guessed at — CLAUDE.md, *Surfacing uncertainty*.
 """
@@ -50,7 +51,7 @@ def _resolved(path: Path) -> str:
 
 
 def known_project_bases() -> list[Path]:
-    """Bases 3-5, in order, de-duplicated. Order matters only for reporting — a hit in
+    """Bases 3-6, in order, de-duplicated. Order matters only for reporting — a hit in
     any of them counts the same when checking for ambiguity. A server that keeps to its base
     (`local.ConfineToDefaultProjectBase`) knows that base alone."""
     confined = get_config_service().confined_base
@@ -58,6 +59,7 @@ def known_project_bases() -> list[Path]:
         return [confined]
     prefs = get_prefs_service().prefs
     raw: list[str] = [prefs.project_base_path or ""]
+    raw += prefs.overview_bases
     raw += [r.path for r in prefs.recent_project_roots]
     raw.append(get_config_service().default_project_base or "")
 

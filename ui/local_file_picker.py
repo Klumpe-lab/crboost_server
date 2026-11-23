@@ -25,10 +25,10 @@ _FOLDER_ICON = _ICON.format(g="folder", c="#94a3b8")
 _FILE_ICON = _ICON.format(g="insert_drive_file", c="#cbd5e1")
 
 _ROW_STYLE = (
-    f"display: flex; align-items: center; gap: 6px; height: 19px; padding: 0 10px; {_SANS} "
+    f"display: flex; align-items: center; gap: 8px; height: 23px; padding: 0 16px; {_SANS} "
     "font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;"
 )
-_NOTE_STYLE = f"{_SANS} font-size: 10px; color: #94a3b8; padding: 6px 10px;"
+_NOTE_STYLE = f"{_SANS} font-size: 10px; color: #94a3b8; padding: 8px 16px;"
 
 # One listener per list, not per row: the rows are an HTML string, so a 500-entry folder is one
 # element on the socket. The click highlights at once in the browser and tells the server which.
@@ -161,8 +161,12 @@ class local_file_picker(ui.dialog):
                         .tooltip("Files shown: one pattern or several, comma-separated (*.mrc,*.rec). Empty = all")
                     )
 
-            with ui.element("div").style("height: 46vh; overflow-y: auto; padding: 2px 0;") as scroller:
-                self._list = ui.html("", sanitize=False)
+            # The card is a flex column that aligns its children to the start: the list takes the card's width,
+            # or it (and every row's hover) would be only as wide as its longest name.
+            with ui.element("div").style(
+                "width: 100%; align-self: stretch; height: 46vh; overflow-y: auto; padding: 4px 0;"
+            ) as scroller:
+                self._list = ui.html("", sanitize=False).style("width: 100%;")
             scroller.on("click", self._on_click, js_handler=_CLICK_JS)
             scroller.on("dblclick", self._on_open, js_handler=_OPEN_JS)
             self.path_input.on("keydown", self._on_click, js_handler=_arrow_js(self._list.id))

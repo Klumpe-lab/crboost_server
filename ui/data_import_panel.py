@@ -633,8 +633,7 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
     # =========================================================================
 
     async def scan_and_display_projects(base_path: str):
-        # The ProjectsOverview component reads the base path each refresh via
-        # base_path_provider, so we just need to trigger it.
+        # The roster reads the bases it lists from the prefs on every refresh: trigger one.
         overview = local_refs.get("projects_overview")
         if overview is not None:
             await overview.refresh(force=True)
@@ -904,6 +903,8 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
                     break
                 created.append((name, Path(result["project_path"])))
                 prefs_service.prefs.add_recent_root(di.project_base_path, label=name)
+                # The roster lists the base the project was made in, or the new project would not show in it.
+                prefs_service.prefs.add_overview_base(str(Path(result["project_path"]).parent.resolve()))
                 prefs_service.prefs.add_recent_project(str(result["project_path"]), label=name)
                 prefs_service.save_to_app_storage(app.storage.user)
 
@@ -956,16 +957,6 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
         # overview (and its selection) comes back.
         if overview is not None and _current_overview() is overview and progress_container is not None:
             _render_overview(overview, restored=False)
-
-    async def handle_load_project_click():
-        start = ui_mgr.data_import.project_base_path or "~"
-        result = await local_file_picker(directory=start, mode="directory")
-        if not result or len(result) == 0:
-            return
-        dir_path = result[0]
-        if ui_mgr.panel_refs.project_path_input:
-            ui_mgr.panel_refs.project_path_input.value = dir_path
-        await commit_project_path(dir_path)
 
     # =========================================================================
     # INIT
@@ -1623,13 +1614,7 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
         )
         with views["overview"]:
             overview = ProjectsOverview(
-                backend,
-                base_path_provider=lambda: ui_mgr.data_import.project_base_path or "",
-                on_browse=handle_load_project_click,
-                auto_refresh_sec=15.0,
-                show_filter=True,
-                fill=True,
-                title_slot=lambda: view_switch("overview"),
+                backend, auto_refresh_sec=15.0, show_filter=True, fill=True, title_slot=lambda: view_switch("overview")
             )
             local_refs["projects_overview"] = overview
             overview.build()

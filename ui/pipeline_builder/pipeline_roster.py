@@ -1078,21 +1078,12 @@ class RosterWidget(FingerprintedView):
 
         from nicegui import app as ng_app
         from services.configs.user_prefs_service import get_prefs_service
-        from ui.local_file_picker import local_file_picker
         from ui.projects_overview import ProjectsOverview
 
         panel = self.panel
-        prefs = get_prefs_service().load_from_app_storage(ng_app.storage.user)
-        # Read by the overview on every refresh; the header's folder button moves it.
-        current_base = {"path": prefs.project_base_path or await panel.backend.get_default_project_base()}
+        # The roster reads this user's bases from the prefs, and its header's folder icon changes them.
+        get_prefs_service().load_from_app_storage(ng_app.storage.user)
         current_path_str = str(panel.ui_mgr.project_path.resolve()) if panel.ui_mgr.project_path else None
-
-        async def _browse():
-            result = await local_file_picker(directory=current_base["path"] or "~", mode="directory")
-            if not result:
-                return
-            current_base["path"] = result[0]
-            await overview.refresh(force=True)
 
         # The landing page's roster, in a dialog. The card is the white sheet the roster sits on (one box deep: a
         # look may make the roster's own panel transparent, and the backdrop must not show through). The backdrop
@@ -1107,8 +1098,6 @@ class RosterWidget(FingerprintedView):
         ):
             overview = ProjectsOverview(
                 panel.backend,
-                base_path_provider=lambda: current_base["path"],
-                on_browse=_browse,
                 auto_refresh_sec=15.0,
                 current_path=current_path_str,
                 show_filter=True,

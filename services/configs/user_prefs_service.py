@@ -54,6 +54,9 @@ class UserPreferences(BaseModel):
     projects_sort_mode: str = "recent"
     projects_column_sort: tuple[str, bool] | None = ("status", True)
     recent_project_roots: list[RecentPath] = Field(default_factory=list)
+    # The bases the projects roster lists together, in the order they were added. Empty until a roster first
+    # opens, which starts it with `project_base_path`. New projects still go to `project_base_path` alone.
+    overview_bases: list[str] = Field(default_factory=list)
     recent_data_paths: list[RecentPath] = Field(default_factory=list)
     # Individual projects (not their base directories), most-recently-opened first.
     # Feeds the "Recently viewed" sort of the projects roster; "viewed" is per-user,
@@ -106,6 +109,24 @@ class UserPreferences(BaseModel):
 
     def clear_recent_roots(self):
         self.recent_project_roots.clear()
+
+    # --- the bases the projects roster lists ---
+
+    def add_overview_base(self, resolved: str) -> bool:
+        """List the base at `resolved` (an absolute, resolved directory: the caller checks it, off the event loop)
+        in the roster, and put it first in the recent bases. False when it was listed already."""
+        label = next((r.label for r in self.recent_project_roots if r.path == resolved), None)
+        self.recent_project_roots[:] = [r for r in self.recent_project_roots if r.path != resolved]
+        self.recent_project_roots.insert(0, RecentPath(path=resolved, last_used=datetime.now(), label=label))
+        del self.recent_project_roots[MAX_RECENT_ROOTS:]
+        if resolved in self.overview_bases:
+            return False
+        self.overview_bases.append(resolved)
+        return True
+
+    def remove_overview_base(self, path: str) -> None:
+        """Stop listing a base in the roster; it stays among the recent bases."""
+        self.overview_bases[:] = [b for b in self.overview_bases if b != path]
 
     # --- individual projects (MRU behind the roster's "Recently viewed" sort) ---
 

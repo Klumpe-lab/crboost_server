@@ -28,6 +28,7 @@ from collections.abc import Awaitable, Callable
 from nicegui import ui, app
 
 from services.background_tasks import get_background_task_registry
+from services.configs.config_service import get_config_service
 from services.configs.user_prefs_service import get_prefs_service
 from services.project_disk_usage import BUCKET_OTHER, BUCKET_PARTICLES, BUCKET_PREPROCESSING, BUCKET_TRASH, DiskUsage
 from services.project_state import SHARED_OWNER
@@ -37,9 +38,11 @@ from ui.components.copyable import copy_on_click
 from ui.components.path_text import path_text
 from ui.components.dialogs import dialog_host
 from ui.components.fields import house_field, house_select
+from ui.components.hover_menu import hover_menu
 from ui.components.reactive import Debounced, SingleFlight
 from ui.components.segmented import render_segmented
 from ui.job_plugins._field_styles import section_head
+from ui.local_file_picker import local_file_picker
 from services.routes import Route, route_to_path
 from ui.styles import MONO, SANS as FONT, WAIT_SPINNER
 
@@ -104,6 +107,30 @@ _CARD_HEAD_STYLE = "margin: 8px 0 3px; flex-shrink: 0;"
 # The rail avatar's card rescans the project's base at most this often, when it opens.
 _OTHERS_RESCAN_S = 30.0
 _others_scanned_at: dict[str, float] = {}
+
+# The bases menu offers this many of the recent bases that are not listed.
+_RECENT_BASES_SHOWN = 8
+# A row of the bases menu: the path, then its count (or its add button), then its remove button.
+_BASES_ROW_STYLE = (
+    "display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; column-gap: 4px; "
+    "padding: 1px 6px 1px 12px; min-height: 24px;"
+)
+_BASES_COUNT_STYLE = f"{MONO} font-size: 9px; text-align: right; min-width: 34px; padding-right: 2px;"
+
+
+def _are_dirs(paths: list[str]) -> list[bool]:
+    """Whether each path is a folder. Runs in a thread: a stat on a cold group mount can take seconds."""
+    return [Path(p).is_dir() for p in paths]
+
+
+def _resolved_dir(path: str) -> str | None:
+    """`path` as an absolute, resolved folder, or None when it is no folder. Runs in a thread."""
+    try:
+        p = Path(path).expanduser().resolve()
+    except OSError:  # a mount that does not answer: not a folder to list
+        return None
+    return str(p) if p.is_dir() else None
+
 
 # WarpTools preview names end in the reconstruction's pixel size: `<tomo>_6.20Apx.png`.
 _PREVIEW_SUFFIX = re.compile(r"_\d+(?:\.\d+)?Apx\.png$")
@@ -262,13 +289,10 @@ class ProjectsOverview:
         Entering a project is only ever the row's chevron: a link to the
         project's routed URL, which loads it. A click on the row itself never
         enters (it previews, when on_select is given).
-    base_path_provider : callable () -> str
-        Returns the directory to scan. Re-evaluated on every refresh so
-        external base-path changes (Browse button, Recent Locations clicks)
-        are picked up automatically.
-    on_browse : optional async callback () -> None
-        If provided, a folder icon in the control row lets the user pick
-        another base location (the caller owns the picker).
+    The bases it lists are the user's (``prefs.overview_bases``), several at once, read on every
+    refresh: the header's folder icon opens them as a table whose rows can be removed, the recent
+    bases to add one from (or forget), and a browse for another. Every roster shares the list. A
+    server that keeps to its base (``ConfineToDefaultProjectBase``) lists that base alone.
     auto_refresh_sec : float
         Polling interval in seconds. Set to 0 to disable.
     current_path : optional str
@@ -294,9 +318,7 @@ class ProjectsOverview:
         self,
         backend,
         *,
-        base_path_provider: Callable[[], str],
         on_select: Callable[[Path], Awaitable[None]] | None = None,
-        on_browse: Callable[[], Awaitable[None]] | None = None,
         auto_refresh_sec: float = DEFAULT_REFRESH_SEC,
         current_path: str | None = None,
         selected_path: str | None = None,
@@ -311,8 +333,6 @@ class ProjectsOverview:
         # When set, a row click *previews* the project (on_select). The landing page
         # leaves this None: there the row is not clickable at all.
         self.on_select = on_select
-        self.on_browse = on_browse
-        self.base_path_provider = base_path_provider
         self.auto_refresh_sec = auto_refresh_sec
         self.current_path = current_path
         self.show_filter = show_filter
@@ -366,7 +386,14 @@ class ProjectsOverview:
         self._syncing_species = False
         self._mru_rank: dict[str, int] = {}
         self._timer = None
-        self._last_scanned_base: str | None = None
+        # The bases the rows on screen were scanned from, each one's last scan, and those that are no folder.
+        self._last_scanned_bases: tuple[str, ...] | None = None
+        self._by_base: dict[str, list[dict]] = {}
+        self._missing: frozenset[str] = frozenset()
+        # More than one base listed: a compact row names its base after the project's name.
+        self._multi_base = False
+        self._bases_body = None
+        self._bases_drawn: object = None
         self._refresh_lock = asyncio.Lock()
         # Set while a row's hover card is open -- holds auto-refresh, since a
         # rebuild would destroy the card under the pointer. _render_list clears it.
@@ -437,15 +464,17 @@ class ProjectsOverview:
                     "text-align: center; width: 100%;"
                 )
                 self._empty_note.set_visibility(False)
-                # The last scan of this base, from any roster, shows at once; the scan below brings it
+                # The last scan of each base, from any roster, shows at once; the scan below brings them
                 # up to date and re-renders only the rows that moved.
-                base = (self.base_path_provider() or "").strip()
-                cached = self.backend.last_project_scan(base) if base else None
-                if cached is None:
+                bases = self._bases()
+                cached = {b: rows for b in bases if (rows := self.backend.last_project_scan(b)) is not None}
+                if not cached:
                     self._skeleton = self._render_loading_skeleton()
-            if cached is not None:
-                self._projects = cached
-                self._last_scanned_base = base
+            if cached:
+                self._by_base = cached
+                self._projects = self._merged(bases)
+                if len(cached) == len(bases):
+                    self._last_scanned_bases = tuple(bases)
                 self._render_list()
 
         # Kick off the first scan; subsequent ones are timer-driven.
@@ -481,31 +510,43 @@ class ProjectsOverview:
         if self._preview_open:
             return
         async with self._refresh_lock:
-            base = (self.base_path_provider() or "").strip()
-            # Nothing of this base on screen yet (first scan, or another base): rows show as the
-            # scan finds them instead of after the whole base is read.
-            stream = bool(base) and base != self._last_scanned_base
+            bases = self._bases()
+            key = tuple(bases)
+            # A base not on screen yet (first scan, or one just added): rows show as the scans find
+            # them instead of after every base is read. The bases are scanned side by side.
+            stream = bool(bases) and key != self._last_scanned_bases
             try:
+                self._missing = frozenset(
+                    b for b, ok in zip(bases, await asyncio.to_thread(_are_dirs, bases), strict=True) if not ok
+                )
                 if stream:
                     self._scanning = True
-                    projects = await self.backend.scan_for_projects(base, on_partial=self._show_partial)
+                    found = await asyncio.gather(
+                        *(
+                            self.backend.scan_for_projects(b, on_partial=lambda rows, b=b: self._show_partial(b, rows))
+                            for b in bases
+                        )
+                    )
                 else:
-                    projects = await self.backend.scan_for_projects(base) if base else []
+                    found = await asyncio.gather(*(self.backend.scan_for_projects(b) for b in bases))
                 self._scanning = False
+                self._by_base = dict(zip(bases, found, strict=True))
+                projects = self._merged(bases)
                 # The timer rescans every tick; rebuild the rows (and their hover menus) only when
                 # the scan, the MRU order or the running deletions moved. Filter, sort and selection
                 # changes re-render through their own handlers.
                 unchanged = (
                     not force
-                    and base == self._last_scanned_base
+                    and key == self._last_scanned_bases
                     and projects == self._projects
                     and self.prefs.prefs.recent_project_rank() == self._mru_rank
                     and _running_roster_tasks() == self._running_tasks
                 )
                 self._projects = projects
-                self._last_scanned_base = base
+                self._last_scanned_bases = key
                 if not unchanged:
                     self._render_list()
+                self._paint_bases()
             except RuntimeError as e:
                 # Client gone (tab closed / navigation race) — stop ticking.
                 logger.info("ProjectsOverview: client gone, stopping (%s)", e)
@@ -525,12 +566,15 @@ class ProjectsOverview:
             self._selected_resolved = None
         self._render_list()
 
-    def _show_partial(self, found: list[dict]) -> None:
-        """A streaming scan's projects so far: render them (new rows only, see _patch_list)."""
+    def _show_partial(self, base: str, found: list[dict]) -> None:
+        """A streaming scan's projects so far in `base`: render them beside the other bases' (new rows only,
+        see _patch_list)."""
         if self._list_container is None or self._list_container.is_deleted:
             return
-        self._set_scan_note(f"Scanning… {len(found)} found")
-        self._projects = found
+        self._by_base[base] = found
+        bases = self._bases()
+        self._projects = self._merged(bases)
+        self._set_scan_note(f"Scanning… {len(self._projects)} found")
         self._render_list()
 
     def _set_scan_note(self, text: str | None) -> None:
@@ -547,6 +591,121 @@ class ProjectsOverview:
             except Exception:
                 pass
             self._timer = None
+
+    # =====================================================================
+    # BASES
+    # =====================================================================
+
+    def _bases(self) -> list[str]:
+        """The folders whose projects the roster lists. The first roster a user opens starts the list with the
+        base new projects go to; a server that keeps to its base lists that base alone."""
+        confined = get_config_service().confined_base
+        if confined is not None:
+            return [str(confined)]
+        prefs = self.prefs.prefs
+        if not prefs.overview_bases:
+            seed = (prefs.project_base_path or get_config_service().default_project_base or "").strip()
+            if seed:
+                prefs.overview_bases.append(seed)
+        return list(prefs.overview_bases)
+
+    def _merged(self, bases: list[str]) -> list[dict]:
+        """The projects of every listed base, base by base, each once."""
+        out: list[dict] = []
+        seen: set[str] = set()
+        for base in bases:
+            for proj in self._by_base.get(base) or []:
+                if proj["path"] not in seen:
+                    seen.add(proj["path"])
+                    out.append(proj)
+        return out
+
+    def _build_bases_menu(self) -> None:
+        """The folder icon: hovered or clicked, the bases listed as a table, a row's cross taking it off the
+        list; the recent bases that are not listed, each to add or to forget; and a browse for another."""
+        trigger = icon_button("folder_open")
+        _menu, body = hover_menu(trigger, align="right")
+        body.style("width: 420px; max-width: 90vw;")
+        self._bases_body = body
+        self._paint_bases()
+
+    def _paint_bases(self) -> None:
+        """Fill the bases menu; a no-op while nothing it shows has changed (a refresh calls it every tick)."""
+        body = self._bases_body
+        if body is None or body.is_deleted:
+            return
+        bases = self._bases()
+        confined = get_config_service().confined_base is not None
+        counts = tuple(len(self._by_base[b]) if b in self._by_base else None for b in bases)
+        recent = [r.path for r in self.prefs.prefs.recent_project_roots if r.path not in bases][:_RECENT_BASES_SHOWN]
+        drawn = (tuple(bases), counts, self._missing, tuple(recent), confined)
+        if drawn == self._bases_drawn:
+            return
+        self._bases_drawn = drawn
+        body.clear()
+        with body:
+            ui.label("Listed").classes("cb-hmenu-group")
+            for base, n in zip(bases, counts, strict=True):
+                with ui.element("div").classes("cb-bases-row").style(_BASES_ROW_STYLE):
+                    path_text(base)
+                    if base in self._missing:
+                        count = ui.label("no folder").style(f"{_BASES_COUNT_STYLE} color: {CLR_FAILED};")
+                        _set_title(count, "Not a folder, or its mount does not answer")
+                    else:
+                        text = "…" if n is None else str(n)
+                        count = ui.label(text).style(f"{_BASES_COUNT_STYLE} color: {CLR_SUBLABEL};")
+                        _set_title(count, "Scanning" if n is None else f"{n} project{'s' if n != 1 else ''}")
+                    if len(bases) > 1 and not confined:
+                        icon_button("close", lambda b=base: self._unlist_base(b), tooltip="Stop listing this base")
+                    else:
+                        ui.element("div")
+            if confined:
+                ui.label("This server keeps to this base (ConfineToDefaultProjectBase in its conf.yaml).").classes(
+                    "cb-hmenu-empty"
+                )
+                return
+            if recent:
+                ui.label("Recent").classes("cb-hmenu-group")
+                for base in recent:
+                    with ui.element("div").classes("cb-bases-row").style(_BASES_ROW_STYLE):
+                        path_text(base)
+                        icon_button("add", lambda b=base: self._list_base(b), tooltip="List its projects too")
+                        icon_button("close", lambda b=base: self._forget_base(b), tooltip="Forget this base")
+            browse = ui.element("div").classes("cb-hmenu-item cb-hmenu-action")
+            with browse:
+                ui.icon("folder_open", size="13px")
+                ui.label("Add a base…").classes("cb-hmenu-text")
+            browse.on("click", self._browse_base)
+
+    async def _browse_base(self) -> None:
+        async with self._flight("browse-base") as acquired:
+            if not acquired:
+                return
+            bases = self._bases()
+            picked = await local_file_picker(directory=bases[-1] if bases else None, mode="directory")
+            if picked:
+                await self._list_base(picked[0])
+
+    async def _list_base(self, path: str) -> None:
+        resolved = await asyncio.to_thread(_resolved_dir, path)
+        if resolved is None:
+            ui.notify(f"No folder {path}", type="warning")
+            return
+        self.prefs.prefs.add_overview_base(resolved)
+        self.prefs.save_to_app_storage(app.storage.user)
+        self._paint_bases()
+        await self.refresh(force=True)
+
+    async def _unlist_base(self, base: str) -> None:
+        self.prefs.prefs.remove_overview_base(base)
+        self.prefs.save_to_app_storage(app.storage.user)
+        self._paint_bases()
+        await self.refresh(force=True)
+
+    def _forget_base(self, base: str) -> None:
+        self.prefs.prefs.remove_recent_root(base)
+        self.prefs.save_to_app_storage(app.storage.user)
+        self._paint_bases()
 
     # =====================================================================
     # HEADER
@@ -595,8 +754,7 @@ class ProjectsOverview:
                         hint="Compact: one line per project. Full: paths and last activity",
                     )
                 with ui.row().classes("items-center no-wrap").style("gap: 6px; flex-shrink: 0;"):
-                    if self.on_browse is not None:
-                        icon_button("folder_open", self.on_browse, tooltip="Browse for another base location")
+                    self._build_bases_menu()
                     self._delete_btn = icon_button(
                         "delete_outline",
                         self._toggle_delete_mode,
@@ -1081,6 +1239,7 @@ class ProjectsOverview:
 
         self._sync_species_options(all_projects)
         self._mru_rank = self.prefs.prefs.recent_project_rank()
+        self._multi_base = len(self._bases()) > 1
 
         show_only_mine = self.prefs.prefs.show_only_mine
         if show_only_mine:
@@ -1120,9 +1279,11 @@ class ProjectsOverview:
         if self._count_label is not None:
             n, total = len(visible), len(all_projects)
             s = "s" if total != 1 else ""
-            self._count_label.set_text(f"{n} of {total}" if n != total else f"{total} project{s}")
+            bases = self._last_scanned_bases or ()
+            where = f" · {len(bases)} bases" if len(bases) > 1 else ""
+            self._count_label.set_text((f"{n} of {total}" if n != total else f"{total} project{s}") + where)
             # A native title, not .tooltip(): that would add a new tooltip element on every refresh.
-            _set_title(self._count_label, f"{n} shown of the {total} project{s} in {self._last_scanned_base or '—'}")
+            _set_title(self._count_label, f"{n} shown of the {total} project{s} in {', '.join(bases) or '—'}")
         if self._size_label is not None:
             measured = [p["disk_usage"] for p in visible if p.get("disk_usage") and not p["disk_usage"].error]
             unmeasured_n = len(visible) - len(measured)
@@ -1146,8 +1307,10 @@ class ProjectsOverview:
         msg = "No projects to show"
         if self._scanning:
             msg = "Scanning…"
-        elif not (self._last_scanned_base or ""):
-            msg = "Set a base location to scan for projects"
+        elif not self._last_scanned_bases:
+            msg = "Add a base location (the folder icon) to list its projects"
+        elif not all_projects and self._missing:
+            msg = f"No folder {', '.join(sorted(self._missing))}"
         elif not all_projects:
             msg = "No projects to show"
         elif self._query_words:
@@ -1184,6 +1347,7 @@ class ProjectsOverview:
                 tags,
                 tagging,
                 bool(armed) and self._carries(tags, armed),
+                self._multi_base,
             )
             items.append((f"row:{path}", fingerprint, lambda: self._render_row(proj, compact=compact)))
 
@@ -1590,6 +1754,12 @@ class ProjectsOverview:
                     f"{FONT} font-size: 11px; font-weight: 600; color: {CLR_HEADING}; letter-spacing: -0.01em; "
                     "overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; flex: 0 1 auto;"
                 )
+                if self._multi_base:
+                    base = Path(proj["path"]).parent
+                    marker = ui.label(base.name).style(
+                        f"{MONO} font-size: 9px; color: {CLR_SUBLABEL}; white-space: nowrap; flex-shrink: 0;"
+                    )
+                    _set_title(marker, str(base))
                 self._render_row_tags(proj)
                 self._render_hover_card(proj, zone, row)
             with ui.element("div").style(f"width: {self._W_LIVE}px; {fixed} display: flex; overflow: hidden;"):
