@@ -34,9 +34,6 @@ class Verb:
     # Confirmed in a dialog the crboost MCP forwarder shows (`confirm` in the answer): the forwarder marks its
     # calls (`dialog`), and without that mark the server hands out no confirmation token.
     dialog: bool = False
-    # The crboost pane's own (agent/claude_plugin): served over HTTP, never listed as a tool, so the model cannot
-    # edit or decide a plan with it.
-    pane: bool = False
 
     @property
     def names_project(self) -> bool:
@@ -616,39 +613,6 @@ _VERBS: tuple[Verb, ...] = (
         m.ApplyIn,
         "write",
         p.apply_changes,
-    ),
-    # ── The crboost pane in Claude Code (never listed as tools) ──
-    Verb(
-        "get_plan_table",
-        "A change plan as the crboost pane draws it: per project a row per job and a column per setting it changes.",
-        m.PlanIn,
-        "read",
-        p.get_plan_table,
-        pane=True,
-    ),
-    Verb(
-        "get_plan_change",
-        "Waits until a change plan's revision or status moves, or the wait is over.",
-        m.PlanChangeIn,
-        "read",
-        p.get_plan_change,
-        pane=True,
-    ),
-    Verb(
-        "edit_plan",
-        "The person's edits of a change plan in the crboost pane: settings and kept deletions.",
-        m.EditPlanIn,
-        "write",
-        p.edit_plan,
-        pane=True,
-    ),
-    Verb(
-        "decide_plan",
-        "The person's Apply or Decline of a change plan in the crboost pane.",
-        m.DecidePlanIn,
-        "write",
-        p.decide_plan,
-        pane=True,
     ),
     # ── Run controls ──
     Verb(

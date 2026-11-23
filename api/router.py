@@ -1,6 +1,5 @@
 """The verb table served over HTTP: `POST /api/v1/<verb>` for each verb, and `GET /api/v1/tools`, the MCP tool
-list (name, description, JSON schema, read or write) with the server instructions. The crboost pane's verbs
-(`Verb.pane`) are served and never listed: the model reaches only listed tools.
+list (name, description, JSON schema, read or write) with the server instructions.
 
 Every request has passed the token gate. A write verb also needs the token as `Authorization: Bearer`: the
 gate's cookie rides along on any same-site request, and every localhost port is the same site. A write verb
@@ -158,7 +157,7 @@ def create_api_router(backend, port: int) -> APIRouter:
             {
                 "api_version": API_VERSION,
                 "instructions": instructions(),
-                "tools": [tool_entry(v) for v in VERBS.values() if not v.pane],
+                "tools": [tool_entry(v) for v in VERBS.values()],
             }
         )
 

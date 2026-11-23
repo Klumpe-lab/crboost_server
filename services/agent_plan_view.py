@@ -227,17 +227,7 @@ def _fact(title: str, value: str) -> dict[str, Any]:
     return {"type": "string", "title": _title(title), "oneOf": [{"const": value, "title": value}], "default": value}
 
 
-def _names(names: list[str]) -> str:
-    """Jobs as a row's title: one by name, several counted with the first named."""
-    if len(names) == 1:
-        return names[0]
-    return f"{len(names)} jobs: {names[0]}, …"
-
-
 def _project_rows(pp: ProjectPlan) -> list[tuple[str, str]]:
-    """A project as rows: one per job the plan changes, its settings joined (now → after), jobs with the same
-    changes in one row; the run one row per set of resources. A plan of 25 jobs with 25 settings each is 25 rows
-    or fewer, not 625: the table to move through is the crboost pane's (agent/claude_plugin) or the page's."""
     tag = "new project" if pp.new else ("your project, made by hand" if pp.hand_made else "")
     rows = [(f"■ {pp.name}", tag or pp.summary().split(": ", 1)[-1])]
     rows += [(f"  {label}", value) for label, value in pp.values]
@@ -246,15 +236,12 @@ def _project_rows(pp: ProjectPlan) -> list[tuple[str, str]]:
             rows.append(("  + job", j.name + (f" (clone of {j.clone_of})" if j.clone_of else "")))
         elif j.mark == "removed":
             rows.append(("  − job", f"{j.name} (off the roster)"))
-    groups: dict[str, list[str]] = {}
     for j in pp.jobs:
         if j.changes:
-            what = "; ".join(
-                f"{f.label}{' (SLURM)' if f.kind == 'slurm' else ''} {show(f.before)} → {show(f.after)}"
-                for f in j.changes
-            )
-            groups.setdefault(what, []).append(j.name)
-    rows += [(f"  {_names(names)}", what) for what, names in groups.items()]
+            rows.append((f"  {j.name}", "now → after" + (" (as added)" if j.mark in ("added", "cloned") else "")))
+        for f in j.changes:
+            label = f.label + (" (SLURM)" if f.kind == "slurm" else "")
+            rows.append((f"    {label}", f"{show(f.before)} → {show(f.after)}"))
     for d in pp.deletions:
         size = format_bytes(d.size_bytes) if d.size_bytes is not None else "size not measured"
         left = f", leaves without input: {', '.join(d.orphans)}" if d.orphans else ""
@@ -265,12 +252,11 @@ def _project_rows(pp: ProjectPlan) -> list[tuple[str, str]]:
         rows.append(
             ("  runs", f"{len(jobs)} job{'s' * (len(jobs) != 1)}" + (" (REFUSED)" if pp.run.get("refusals") else ""))
         )
-        by_resources: dict[str, list[str]] = {}
         for job in jobs:
             r = job.get("resources") or {}
-            key = " · ".join(show(r.get(k)) for k in ("partition", "gres", "time"))
-            by_resources.setdefault(key, []).append(job["instance_id"])
-        rows += [(f"    {_names(names)}", key) for key, names in by_resources.items()]
+            rows.append(
+                (f"    {job['instance_id']}", " · ".join(show(r.get(k)) for k in ("partition", "gres", "time")))
+            )
     return rows
 
 

@@ -1,7 +1,0 @@
-{
-  "name": "crboost-plan",
-  "version": "0.1.0",
-  "description": "CryoBoost change plans as tables you move through, edit and decide in, in place of the MCP form",
-  "types": "./types/index.d.ts",
-  "license": "Apache-2.0"
-}
