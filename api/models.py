@@ -228,6 +228,47 @@ class MakePolaritySetIn(JobIn):
     )
 
 
+class SubparticleSiteIn(JobIn):
+    species: str = Field(
+        description="The sub-unit's own species, by its id in this project: its symmetry and Ø are what jobs on "
+        "the set start from. Not the species the job refined; make it first (create_species) when it is missing"
+    )
+    axis: str | None = Field(
+        None,
+        description="Particles: the axis of the job's point group the unit sits on, as get_subparticles names "
+        "them (`5-fold`), or `direction` with direction",
+    )
+    direction: list[float] | None = Field(
+        None,
+        min_length=3,
+        max_length=3,
+        description="Particles, instead of an axis: the direction from the particle's centre to the unit, three "
+        "numbers in the map's frame (any length)",
+    )
+    radius_ang: float | None = Field(
+        None, description="How far the unit's centre is from the particle's centre, or from a filament's axis, in Å"
+    )
+    twist_deg: float | None = Field(None, description="Filaments: the helix's twist per step, as RELION takes it")
+    rise_ang: float | None = Field(None, description="Filaments: the helix's rise per step, in Å")
+    axial_repeat_ang: float | None = Field(
+        None,
+        description="Filaments whose lattice has several starts: the unit's repeat straight along the axis, in Å "
+        "(a microtubule's monomer repeat). Omitted: the helix's steps alone",
+    )
+    every: int = Field(1, ge=1, description="Filaments: every n-th step of the helix")
+    azimuth_deg: float | None = Field(
+        None, description="Filaments: where a unit sits about the axis in the map, from its X axis (omitted: 0)"
+    )
+    axial_ang: float | None = Field(
+        None, description="Filaments: where a unit sits along the axis from the box centre, in Å (omitted: 0)"
+    )
+    measured_on: str | None = Field(None, description="The job whose map these values were read from")
+
+
+class MakeSubparticleSetIn(SubparticleSiteIn):
+    name: str = Field(description="The set's name")
+
+
 class TaskIn(_In):
     task_id: str = Field(description="The id a verb that runs in the background returned")
 

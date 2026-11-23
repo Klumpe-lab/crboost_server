@@ -735,6 +735,77 @@ async def make_polarity_set(call: Call) -> dict[str, Any]:
     return res
 
 
+def _site_values(a) -> dict[str, Any]:
+    """The site's values a sub-particle verb was given, as the dialog hands them on."""
+    keys = (
+        "axis",
+        "direction",
+        "radius_ang",
+        "twist_deg",
+        "rise_ang",
+        "axial_repeat_ang",
+        "every",
+        "azimuth_deg",
+        "axial_ang",
+    )
+    return {k: getattr(a, k) for k in keys if getattr(a, k) is not None}
+
+
+async def get_subparticles(call: Call) -> dict[str, Any]:
+    """What a Refine 3D's or an M refine's Sub-units block shows."""
+    _jm, problem = call.job(call.args.job)
+    if problem:
+        return problem
+    res = await call.backend.subparticle_readout(call.path, call.args.job)
+    if res["success"]:
+        res.update(res.pop("readout"))
+    res["ui_url"] = call.url(View.JOB, call.args.job)
+    return res
+
+
+async def plan_subparticle_set(call: Call) -> dict[str, Any]:
+    """What Make sub-particle set would write, as its dialog counts it. Writes nothing."""
+    a = call.args
+    _jm, problem = call.job(a.job)
+    if problem:
+        return problem
+    res = await call.backend.subparticle_plan(
+        call.path, instance_id=a.job, species_id=a.species, values=_site_values(a)
+    )
+    if res["success"]:
+        res.update(res.pop("plan"))
+    res["ui_url"] = call.url(View.JOB, a.job)
+    return res
+
+
+async def make_subparticle_set(call: Call) -> dict[str, Any]:
+    """A set of the copies of one unit in a job's refined particles, as its Results' Make sub-particle set does."""
+    a = call.args
+    _jm, problem = call.job(a.job)
+    if problem:
+        return problem
+    res = await call.backend.create_subparticle_set(
+        call.path,
+        instance_id=a.job,
+        species_id=a.species,
+        name=a.name,
+        values=_site_values(a),
+        measured_on=a.measured_on or "",
+    )
+    if res["success"]:
+        ps = res.pop("set")
+        res.update(
+            set=ps.id,
+            name=ps.name,
+            picks=ps.n_particles,
+            funnel=[f.model_dump() for f in ps.funnel],
+            notes=list(ps.notes),
+            site=ps.recipe.params.get("site"),
+        )
+    res["ui_url"] = call.url(View.JOB, a.job)
+    return res
+
+
 async def plan_run(call: Call) -> dict[str, Any]:
     res = await call.backend.pipeline_orchestrator.plan_run(call.path)
     res["ui_url"] = call.url()

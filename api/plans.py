@@ -222,6 +222,12 @@ def sentence(verb: str, a, state: ProjectState | None) -> str:
     if verb == "make_polarity_set":
         undecided = "kept as they are" if a.keep_undecided else "left out"
         return f"Make the set {a.name} of {j(a.job)}'s filaments turned to their majority (undecided {undecided})"
+    if verb == "make_subparticle_set":
+        if a.twist_deg is not None or a.rise_ang is not None:
+            where = f"a helix of {a.twist_deg}° and {a.rise_ang} Å at {a.radius_ang} Å from the axis"
+        else:
+            where = f"the {a.axis or 'direction ' + str(a.direction)} at {a.radius_ang} Å"
+        return f"Make the set {a.name}: the {a.species} sub-units of {j(a.job)}'s particles, on {where}"
     text = _args_text(a)
     return verb.replace("_", " ").capitalize() + (f": {text}" if text else "")
 
