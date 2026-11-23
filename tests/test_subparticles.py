@@ -136,6 +136,12 @@ def _capsids(n: int = 7, seed: int = 1) -> pd.DataFrame:
     return df
 
 
+def _same_rows(a: pd.DataFrame, b: pd.DataFrame) -> None:
+    """Made again, the same rows: numbers equal far below the six decimals a star keeps (numpy's sums can differ in
+    the last bit from one call to the next, with the arrays' alignment in memory)."""
+    pd.testing.assert_frame_equal(a, b, check_exact=False, rtol=0, atol=1e-9)
+
+
 PENTAMER = {"kind": "point_group", "group": "I1", "axis": "5-fold", "radius_ang": 238.0}
 
 
@@ -160,7 +166,7 @@ def test_placement_on_capsids():
     # The parent's images and what its refinement measured of it are not carried; its score is.
     assert not {"rlnImageName", "rlnTomoParticleName", "rlnClassNumber"} & set(rows.columns)
     assert "rlnLCCmax" in rows.columns
-    assert subparticles.place(parents, PENTAMER).rows.equals(rows)
+    _same_rows(subparticles.place(parents, PENTAMER).rows, rows)
 
 
 def test_copies_are_valid_parents():
@@ -266,3 +272,146 @@ def test_segments_that_disagree_about_the_lattice_are_said():
     a.loc[a.index % 2 == 1, CENTERED_COLS[2]] += 0.4 * REPEAT
     out = subparticles.place(a, _lattice_site())
     assert out.n_close > 0 and any("disagree" in n for n in out.notes)
+
+
+# ── Expansions: the same images in every pose the symmetry makes equal ─────────────────────────
+
+
+def _segments(n: int = 6) -> pd.DataFrame:
+    """Refined segments with their images, origins and a refinement's per-particle scores."""
+    rng = np.random.default_rng(3)
+    df = _filament(n_segments=n).assign(
+        rlnImageName=[f"seg{i}.mrcs" for i in range(n)],
+        rlnTomoParticleName=[f"t1/{i}" for i in range(n)],
+        rlnAngleRot=rng.uniform(-180, 180, n),
+        rlnAngleTilt=rng.uniform(20, 160, n),
+        rlnAnglePsi=rng.uniform(-180, 180, n),
+        rlnAngleTiltPrior=90.0,
+        rlnAnglePsiPrior=0.0,
+        rlnOriginXAngst=rng.normal(0, 2, n),
+        rlnOriginYAngst=rng.normal(0, 2, n),
+        rlnOriginZAngst=rng.normal(0, 2, n),
+        rlnLogLikeliContribution=1.0e6,
+    )
+    return df
+
+
+DIMERS = {"kind": "lattice", "twist_deg": TWIST, "rise_ang": RISE, "axial_repeat_ang": REPEAT, "units_per_repeat": 2}
+
+
+def _moves_lattice_onto_itself(q: np.ndarray, v: np.ndarray, lattice: np.ndarray) -> bool:
+    """Every unit of `lattice` (away from its ends) lands on a unit after the move Q·p + v."""
+    from scipy.spatial import cKDTree
+
+    inner = lattice[np.abs(lattice[:, 2]) < 150.0]
+    d, _ = cKDTree(lattice).query(inner @ q.T + v)
+    return bool(d.max() < 1e-6)
+
+
+def test_a_lattice_s_registrations():
+    """26 for a 13_3 lattice of dimers: each carries the monomer lattice onto itself, no two are the same pose of
+    the dimers (they differ by more than whole dimer repeats), label k is k steps of the helix, and none moves
+    further than half a dimer repeat (the 26 steps in a row would move 124 Å)."""
+    e = sites.expansion_of(DIMERS)
+    assert e.n == 26 and e.by_steps and sorted(e.labels) == list(range(26))
+    assert e.max_shift_ang <= REPEAT + 1e-6
+    lattice = sites.helix_site(
+        twist_deg=TWIST, rise_ang=RISE, radius_ang=102.0, half_window_ang=400.0, axial_repeat_ang=REPEAT
+    ).offsets
+    for q, v in zip(e.rotations, e.offsets, strict=True):
+        assert _moves_lattice_onto_itself(q, v, lattice)
+    for k, q, v in zip(e.labels, e.rotations, e.offsets, strict=True):
+        # k steps of the helix, less whole dimer repeats along the axis, are this registration.
+        steps_q, steps_z = sites.rot_z(k * TWIST), k * RISE
+        assert np.allclose(steps_q, q, atol=1e-9)
+        assert np.isclose(((steps_z - v[2]) / SPACING) % 1.0, 0.0, atol=1e-6) or np.isclose(
+            ((steps_z - v[2]) / SPACING) % 1.0, 1.0, atol=1e-6
+        )
+    for i in range(26):
+        for j in range(i + 1, 26):
+            same_turn = np.allclose(e.rotations[i], e.rotations[j], atol=1e-9)
+            dz = (e.offsets[i, 2] - e.offsets[j, 2]) / SPACING
+            assert not (same_turn and np.isclose(dz, round(dz), atol=1e-6))
+    assert sites.expansion_of(dict(DIMERS)).digest == e.digest
+
+
+def test_an_expansion_keeps_the_images_and_moves_the_origins():
+    parents = _segments()
+    out = subparticles.expand(parents, DIMERS)
+    rows, k = out.rows, 26
+    assert (out.n_parents, out.per_parent, len(rows)) == (6, k, 6 * k)
+    # The images, the coordinate and the half are the particle's; the refinement's score of the parent is not.
+    for c in ("rlnImageName", "rlnTomoParticleName", *CENTERED_COLS, "rlnRandomSubset", "rlnHelicalTubeID"):
+        assert (rows[c].to_numpy() == np.repeat(parents[c].to_numpy(), k)).all(), c
+    assert "rlnLogLikeliContribution" not in rows.columns
+    # The pose is the parent's followed by the registration; the centre (coordinate − origin) moves by A·v.
+    a = euler_matrices(parents["rlnAngleRot"], parents["rlnAngleTilt"], parents["rlnAnglePsi"])
+    e = out.expansion
+    got = euler_matrices(rows["rlnAngleRot"], rows["rlnAngleTilt"], rows["rlnAnglePsi"]).reshape(6, k, 3, 3)
+    assert np.allclose(got, np.einsum("nij,kjl->nkil", a, e.rotations), atol=1e-9)
+    origin = ["rlnOriginXAngst", "rlnOriginYAngst", "rlnOriginZAngst"]
+    centre = parents[CENTERED_COLS].to_numpy() - parents[origin].to_numpy()
+    moved = (rows[CENTERED_COLS].to_numpy() - rows[origin].to_numpy()).reshape(6, k, 3)
+    assert np.allclose(moved, centre[:, None, :] + np.einsum("nij,kj->nki", a, e.offsets), atol=1e-9)
+    # A turn about the filament's own axis keeps its tilt and psi, so the priors still hold; the origin is its own
+    # prior, so RELION's prior on translations weighs every copy alike.
+    assert np.allclose(rows["rlnAngleTilt"], np.repeat(parents["rlnAngleTilt"], k), atol=1e-9)
+    assert {"rlnAngleTiltPrior", "rlnAnglePsiPrior"} <= set(rows.columns)
+    priors = ["rlnOriginXPriorAngst", "rlnOriginYPriorAngst", "rlnOriginZPriorAngst"]
+    assert np.allclose(rows[priors].to_numpy(), rows[origin].to_numpy())
+    # One uid per copy, its particle named, its label kept, one filament.
+    assert rows["cbPickUid"].is_unique
+    assert rows["cbParentUid"].nunique() == 6 and rows["cbAssembly"].nunique() == 1
+    assert (rows["cbSubIndex"].to_numpy() == np.tile(e.labels, 6)).all()
+    _same_rows(subparticles.expand(parents, DIMERS).rows, rows)
+
+
+def test_a_point_group_expansion_takes_every_operator():
+    parents = _capsids().assign(rlnAngleTiltPrior=0.0)
+    out = subparticles.expand(parents, {"kind": "point_group", "group": "I1"})
+    rows = out.rows
+    assert len(rows) == 7 * 60
+    origin = ["rlnOriginXAngst", "rlnOriginYAngst", "rlnOriginZAngst"]
+    assert np.allclose(rows[origin].to_numpy(), np.repeat(parents[origin].to_numpy(), 60, axis=0))
+    a = euler_matrices(parents["rlnAngleRot"], parents["rlnAngleTilt"], parents["rlnAnglePsi"])
+    got = euler_matrices(rows["rlnAngleRot"], rows["rlnAngleTilt"], rows["rlnAnglePsi"]).reshape(7, 60, 3, 3)
+    assert np.allclose(got, np.einsum("nij,kjl->nkil", a, sites.operators("I1")), atol=1e-9)
+    assert "rlnAngleTiltPrior" not in rows.columns  # a point group's turn moves tilt and psi
+    assert (rows.groupby("cbAssembly")["rlnRandomSubset"].nunique() == 1).all()
+
+
+def test_what_cannot_be_expanded_is_refused():
+    with pytest.raises(ValueError, match="rlnImageName"):
+        subparticles.expand(_segments().drop(columns=["rlnImageName"]), DIMERS)
+    with pytest.raises(ValueError, match="units per repeat"):
+        sites.expansion_of(DIMERS | {"units_per_repeat": 1})
+    with pytest.raises(ValueError, match="never come back"):
+        sites.expansion_of(DIMERS | {"twist_deg": -166.6, "rise_ang": 27.6, "axial_repeat_ang": 27.6 * 1.37})
+    with pytest.raises(ValueError, match="nothing to expand"):
+        sites.point_group_expansion("C1")
+
+
+def test_a_scaled_template_puts_the_structure_where_the_scale_says(tmp_path):
+    """A blob off the centre, scaled by 0.9 across Z and 1.1 along it, lands where the scale puts it, on the grid
+    asked for: the resample that brings a deposited filament to the data's lattice."""
+    import mrcfile
+
+    from services.templating import volume_prep
+
+    n, apix = 64, 2.0
+    ax = (np.arange(n) - n // 2) * apix
+    z, y, x = np.meshgrid(ax, ax, ax, indexing="ij")
+    blob = np.exp(-((x - 20.0) ** 2 + (y + 10.0) ** 2 + (z - 30.0) ** 2) / (2 * 4.0**2)).astype(np.float32)
+    src = tmp_path / "src.mrc"
+    with mrcfile.new(src) as m:
+        m.set_data(blob)
+        m.voxel_size = apix
+    white, black = tmp_path / "w.mrc", tmp_path / "b.mrc"
+    info = volume_prep.resample_scaled(str(src), str(white), str(black), 3.0, 48, 0.9, 1.1)
+    out = mrcfile.read(white)
+    assert out.shape == (48, 48, 48) and np.isclose(mrcfile.open(white).voxel_size.x, 3.0)
+    assert np.allclose(mrcfile.read(black), -out)
+    k, j, i = np.unravel_index(np.argmax(out), out.shape)
+    where = (np.array([i, j, k]) - 24) * 3.0
+    assert np.allclose(where, [20.0 * 0.9, -10.0 * 0.9, 30.0 * 1.1], atol=1.6)
+    assert info.cutoff_ang == 6.0

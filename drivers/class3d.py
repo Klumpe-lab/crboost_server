@@ -16,6 +16,7 @@ import traceback
 from pathlib import Path
 
 from drivers.driver_base import ToolCommand, chosen_solvent_mask, get_driver_context, run_tool, start_supervisor
+from drivers.refine3d import check_template_reference
 from drivers.relion_continue import changed_since_start, continue_command, latest_checkpoint, program_index
 from services.jobs.class3d import Class3DParams
 from services.particles.warp_geometry import require_images
@@ -167,7 +168,12 @@ def main():
         additional_binds = list(context.get("additional_binds", []))
 
         input_optimisation = paths["input_optimisation"]
-        input_reference = paths["input_reference"]
+        if params.reference_from_template:
+            if not params.reference_path.strip():
+                raise ValueError("Template as reference is on and the job names no template")
+            input_reference = Path(params.reference_path)
+        else:
+            input_reference = paths["input_reference"]
 
         if not input_optimisation.exists():
             raise FileNotFoundError(f"Input optimisation_set.star not found: {input_optimisation}")
@@ -176,6 +182,8 @@ def main():
 
         print(f"[DRIVER] Input optimisation_set: {input_optimisation}", flush=True)
         print(f"[DRIVER] Input reference: {input_reference}", flush=True)
+        if params.reference_from_template:
+            check_template_reference(input_optimisation, input_reference)
         print(f"[DRIVER] Job dir: {job_dir}", flush=True)
         require_images(_parse_optimisation_set(input_optimisation)[0])
 

@@ -104,7 +104,9 @@ _VERBS: tuple[Verb, ...] = (
         "What a Refine 3D's or an M refine's Sub-units block shows: whether its particles hold copies of a unit "
         "(a point group other than C1, or filament segments), the axes of its group a unit can sit on with the "
         "copies each gives, a helical refinement's own twist and rise, the species a sub-unit can be, the sets "
-        "already made of it and the values of the last one per sub-unit. Changes nothing.",
+        "already made of it and the values of the last one per sub-unit; under `expansion`, what its particles "
+        "expand by (a lattice's registrations, a point group's operators) and the expansion sets made of it. "
+        "Changes nothing.",
         m.JobIn,
         "read",
         h.get_subparticles,
@@ -197,6 +199,14 @@ _VERBS: tuple[Verb, ...] = (
         m.SubparticleSiteIn,
         "read",
         h.plan_subparticle_set,
+    ),
+    Verb(
+        "plan_expansion_set",
+        "What make_expansion_set would write, writing nothing: the expansion as understood, each copy's turn about "
+        "the particle's axis and move along it, the copies per particle and the count.",
+        m.ExpansionIn,
+        "read",
+        h.plan_expansion_set,
     ),
     Verb(
         "plan_run",
@@ -500,6 +510,20 @@ _VERBS: tuple[Verb, ...] = (
         m.MakeSubparticleSetIn,
         "write",
         h.make_subparticle_set,
+    ),
+    Verb(
+        "make_expansion_set",
+        "An extracted set of every refined particle of a Refine 3D or an M refine in each pose its symmetry makes "
+        "equal, as its Results' Make expansion set does: the same images, each copy's pose and origin changed, its "
+        "label in cbSubIndex and its particle's uid in cbParentUid. Particles: the operators of the point group "
+        "they were refined with (RELION's symmetry expansion). Filament segments: the registrations of their "
+        "lattice that the true repeat tells apart (26 for a 13-protofilament microtubule's alpha/beta dimers), each by "
+        "its smallest move. A Class 3D with Skip alignment on the set scores every copy. The lattice's values come "
+        "from the user, measured on their map: never fill one in. Read get_subparticles and plan_expansion_set "
+        "first.",
+        m.MakeExpansionSetIn,
+        "write",
+        h.make_expansion_set,
     ),
     # ── Deletions ──
     Verb(

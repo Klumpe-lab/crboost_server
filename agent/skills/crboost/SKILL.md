@@ -158,6 +158,10 @@ of its picks; Make set turns what a recipe keeps into a particle set of the home
    `radius_ang`, and `axial_repeat_ang` when the lattice has several starts) is the user's, read off their map:
    never fill one in. `plan_subparticle_set` counts without writing; `make_subparticle_set(project, job, species,
    name, …)` writes a coordinates set, which a Warp Export or a Reconstruct Particle cuts anew.
+   An expansion keeps the images instead: `plan_expansion_set` / `make_expansion_set(project, job, name, …)` hold
+   each particle in every pose its symmetry makes equal (a point group's operators; for filament segments the
+   registrations of their lattice, `twist_deg`, `rise_ang`, `axial_repeat_ang` and `units_per_repeat`, all the
+   user's). A Class 3D with Skip alignment on that set scores every copy against one reference.
 
 Verdicts on single picks, the review sample, and the choice between two reconstructions or sources of one tilt
 series stay in the kitchen: `get_kitchen` says when such a choice stops Make set; give the user the `ui_url`.

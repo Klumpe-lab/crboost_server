@@ -330,6 +330,182 @@ def helix_site(
     )
 
 
+# ── Expansions: the poses a particle's symmetry, or its lattice's, makes equal ───────────────────
+
+LATTICE = "lattice"
+# A helix comes back onto itself when its steps turn whole turns within this and rise whole repeats within that.
+_CLOSE_DEG = 0.5
+_CLOSE_ANG = 1.0
+_MAX_STEPS = 60
+
+
+@dataclass(frozen=True, eq=False)
+class Expansion:
+    """The poses of one particle that a refinement could not tell apart: copy k is the particle's pose followed by
+    (`rotations[k]`, `offsets[k]`), labelled `labels[k]`. A point group's are its operators (the particle sits on
+    its own centre in each). A lattice's are its registrations: the poses one helical step, or one unit along the
+    axis, apart, as many as the true repeat tells apart, each by its smallest move. The images stay the particle's;
+    only the pose and the origin change."""
+
+    description: dict[str, Any]
+    rotations: np.ndarray
+    offsets: np.ndarray
+    labels: np.ndarray
+    turns_deg: np.ndarray
+    shifts_ang: np.ndarray
+    by_steps: bool = False  # a lattice whose labels count the helix's own steps (every registration is one)
+
+    @property
+    def kind(self) -> str:
+        return str(self.description["kind"])
+
+    @property
+    def n(self) -> int:
+        return len(self.offsets)
+
+    @property
+    def digest(self) -> str:
+        return hashlib.sha1(json.dumps(self.description, sort_keys=True).encode()).hexdigest()[:10]
+
+    @property
+    def max_shift_ang(self) -> float:
+        return float(np.abs(self.shifts_ang).max()) if self.n else 0.0
+
+    def text(self) -> str:
+        d = self.description
+        if self.kind == POINT_GROUP:
+            return f"the {self.n} operators of {d['group']}"
+        return (
+            f"{self.n} registrations of a helix {d['twist_deg']:g}° / {d['rise_ang']:g} Å with "
+            f"{d['axial_repeat_ang']:g} Å along the axis, {d['units_per_repeat']} units to a repeat"
+        )
+
+    def table(self) -> list[dict[str, float]]:
+        """One row per copy: its label, its turn about the axis and its move along it."""
+        return [
+            {"label": int(k), "turn_deg": round(float(t), 3), "shift_ang": round(float(s), 3)}
+            for k, t, s in zip(self.labels, self.turns_deg, self.shifts_ang, strict=True)
+        ]
+
+
+def _wrap_deg(deg: float) -> float:
+    return float((deg + 180.0) % 360.0 - 180.0)
+
+
+def point_group_expansion(symmetry: str) -> Expansion:
+    """Every operator of `symmetry`, in RELION's order: the copies RELION's symmetry expansion makes."""
+    name = group_name(symmetry)
+    if name in ("", "C1"):
+        raise ValueError("C1 has one operator: there is nothing to expand")
+    ops = operators(name)
+    n = len(ops)
+    return Expansion(
+        description={"kind": POINT_GROUP, "group": name},
+        rotations=np.array(ops),
+        offsets=np.zeros((n, 3)),
+        labels=np.arange(n),
+        turns_deg=np.array([np.degrees(a[1]) if (a := _axis_of(op)) else 0.0 for op in ops]),
+        shifts_ang=np.zeros(n),
+    )
+
+
+def lattice_expansion(*, twist_deg, rise_ang, axial_repeat_ang, units_per_repeat) -> Expansion:
+    """The registrations of a helical lattice with several starts whose units a refinement could not tell apart,
+    when the true repeat along the axis is `units_per_repeat` units (2 for a microtubule's alpha/beta dimers).
+
+    The lattice the refinement saw is carried onto itself by a helical step (`twist_deg`, `rise_ang`) and by one
+    unit straight along the axis (`axial_repeat_ang`); after n steps the helix is back on its own protofilament m
+    units up (13 and 3 for a 13_3 microtubule). Two of those poses that differ by whole true repeats are one
+    registration, so there are n × `units_per_repeat` (26). Each is taken by its smallest move along the axis, so a
+    copy's reference moves at most half a true repeat from the particle's own (41 Å for a microtubule), not the
+    124 Å of 26 helical steps in a row. Labels count the helix's steps (k = 0 … 25, k steps of the helix) when
+    every registration is some number of steps; otherwise turns + n × units."""
+    try:
+        twist, rise = float(twist_deg), float(rise_ang)
+    except (TypeError, ValueError):
+        raise ValueError("the twist and the rise are not given") from None
+    if not np.isfinite(twist) or abs(twist) < 1e-6:
+        raise ValueError("a lattice's registrations need its twist (not 0)")
+    repeat = _positive(axial_repeat_ang, "the repeat along the axis")
+    try:
+        u = int(units_per_repeat)
+    except (TypeError, ValueError):
+        raise ValueError("how many units make the true repeat is not given") from None
+    if u < 2:
+        raise ValueError("with one unit to a repeat every registration is the same: units per repeat is 2 or more")
+    found = None
+    for steps in range(1, _MAX_STEPS + 1):
+        turns, ups = steps * twist / 360.0, steps * rise / repeat
+        if round(turns) != 0 and abs(turns - round(turns)) * 360.0 < _CLOSE_DEG:
+            if abs(ups - round(ups)) * repeat < _CLOSE_ANG:
+                found = (steps, round(ups))
+                break
+    if found is None:
+        raise ValueError(
+            f"{_MAX_STEPS} steps of a helix of {twist:g}° and {rise:g} Å never come back onto the same "
+            f"protofilament a whole number of {repeat:g} Å repeats up: not a lattice of several starts"
+        )
+    n, m = found
+    true_repeat = u * repeat
+    rotations, offsets, labels, turns_out, shifts = [], [], [], [], []
+    by_steps = int(np.gcd(m, u)) == 1
+    for a0 in range(n):
+        for b0 in range(u):
+            # (a0, b0) is a0 steps and b0 units; n steps are m units, u units a true repeat.
+            candidates = []
+            for j in (-1, 0, 1):
+                a = a0 + j * n
+                z0 = a * rise + (b0 - j * m) * repeat
+                i = round(-z0 / true_repeat)
+                candidates += [(a, z0 + ii * true_repeat) for ii in (i - 1, i, i + 1)]
+            # n steps less m units moves by n·rise − m·repeat, a hundredth of an Å: moves equal within a tenth
+            # are one, and the fewest steps take it.
+            least = min(abs(z) for _, z in candidates)
+            a, z = min(((a, z) for a, z in candidates if abs(z) <= least + 0.1), key=lambda c: (abs(c[0]), -c[1]))
+            if by_steps:
+                # The step count k whose k steps land in this registration: k ≡ a0 (mod n), (k // n)·m ≡ b0 (mod u).
+                label = next(k for k in range(n * u) if k % n == a0 and ((k // n) * m - b0) % u == 0)
+            else:
+                label = a0 + n * b0
+            turn = _wrap_deg(a * twist)
+            rotations.append(rot_z(turn))
+            offsets.append([0.0, 0.0, z])
+            labels.append(label)
+            turns_out.append(turn)
+            shifts.append(z)
+    order = np.argsort(labels, kind="stable")
+    return Expansion(
+        description={
+            "kind": LATTICE,
+            "twist_deg": twist,
+            "rise_ang": rise,
+            "axial_repeat_ang": repeat,
+            "units_per_repeat": u,
+        },
+        rotations=np.asarray(rotations)[order],
+        offsets=np.asarray(offsets)[order],
+        labels=np.asarray(labels)[order],
+        turns_deg=np.asarray(turns_out)[order],
+        shifts_ang=np.asarray(shifts)[order],
+        by_steps=by_steps,
+    )
+
+
+def expansion_of(description: dict[str, Any]) -> Expansion:
+    """The expansion a description names."""
+    kind = (description or {}).get("kind")
+    if kind == POINT_GROUP:
+        return point_group_expansion(description.get("group", ""))
+    if kind == LATTICE:
+        return lattice_expansion(
+            twist_deg=description.get("twist_deg"),
+            rise_ang=description.get("rise_ang"),
+            axial_repeat_ang=description.get("axial_repeat_ang"),
+            units_per_repeat=description.get("units_per_repeat"),
+        )
+    raise ValueError(f"not a kind of expansion: {kind!r}")
+
+
 def site_of(description: dict[str, Any], *, half_window_ang: float | None = None) -> Site:
     """The site a description names. A helix's copies depend on how much filament a segment stands for
     (`half_window_ang`), which the segments say, not the description."""
@@ -360,14 +536,19 @@ def site_of(description: dict[str, Any], *, half_window_ang: float | None = None
 __all__ = [
     "DIRECTION",
     "HELIX",
+    "LATTICE",
     "POINT_GROUP",
     "AxisClass",
+    "Expansion",
     "Site",
     "axis_classes",
+    "expansion_of",
     "group_name",
     "helix_site",
     "known_group",
+    "lattice_expansion",
     "operators",
+    "point_group_expansion",
     "point_group_site",
     "site_of",
 ]

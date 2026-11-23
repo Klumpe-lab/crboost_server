@@ -68,6 +68,8 @@ class SetOp(StrEnum):
     POLARITY = "polarity"  # a helical Refine 3D's segments, each filament turned to its majority's direction
     # The copies of a unit each refined particle is built from (capsomers, a filament's monomers), cut anew
     SUBPARTICLES = "subparticles"
+    # Each refined particle in every pose its symmetry (or its lattice's registrations) makes equal, same images
+    EXPANSION = "expansion"
 
 
 class ParentRef(BaseModel):

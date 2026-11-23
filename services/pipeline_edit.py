@@ -125,6 +125,11 @@ def species_defaults(job_type: JobType, species) -> dict[str, Any]:
             out.update(binning=ep.binning, box_size=ep.crop_size if ep.crop_size > 0 else ep.box_size)
         if diameter:
             out["diameter_ang"] = float(diameter)
+    elif job_type == JobType.CLASS3D:
+        # The template a Class 3D starts from when it is set to (off unless the user turns it on).
+        template = get_effective_template_path(species)
+        if template:
+            out["reference_path"] = template
     elif job_type == JobType.REFINE3D:
         # The template a Refine 3D starts from when it is set to (off unless the user turns it on).
         template = get_effective_template_path(species)

@@ -270,4 +270,122 @@ def place(
     return out
 
 
-__all__ = ["ASSEMBLY_COL", "DOUBLES_SHARE", "INDEX_COL", "PARENT_COL", "Placement", "place", "segment_spacing"]
+# ── Expansion: each particle in every pose its symmetry makes equal, the same images ─────────────
+
+IMAGE_COL = "rlnImageName"
+ORIGIN_PRIOR_COLS = ["rlnOriginXPriorAngst", "rlnOriginYPriorAngst", "rlnOriginZPriorAngst"]
+ANGLE_PRIOR_COLS = ["rlnAngleRotPrior", "rlnAngleTiltPrior", "rlnAnglePsiPrior"]
+# What a refinement measured of the particle in its old pose: no copy's score, so not carried.
+REFINED_SCORE_COLS = ["rlnLogLikeliContribution", "rlnMaxValueProbDistribution", "rlnNrOfSignificantSamples"]
+
+
+@dataclass
+class Expanded:
+    """What `expand` made: the rows and the counts a funnel states."""
+
+    rows: pd.DataFrame
+    expansion: sites.Expansion
+    n_parents: int
+    notes: list[str] = field(default_factory=list)
+
+    @property
+    def per_parent(self) -> int:
+        return self.expansion.n
+
+
+def expand(parents: pd.DataFrame, description: dict) -> Expanded:
+    """Every row of `parents` (refined particles with their images) in each pose of the expansion `description`
+    names (`sites.expansion_of`): copy k's pose is the parent's followed by (Q_k, v_k), A·Q_k, and its centre
+    moves by A·v_k, which RELION reads from the origin (centre = coordinate − origin): origin − A·v_k. The
+    coordinate, the images and every other column stay the parent's, so a job reading the set compares each copy
+    with the same images. Each copy's origin is also its origin prior, so RELION's prior on translations weighs
+    every copy of a particle alike (without priors it centres them on zero, and a copy that moved further would
+    lose for that alone).
+
+    A lattice's copies keep their tilt and psi (they turn about the particle's own Z, the filament's axis), so the
+    angle priors stay; a point group's do not, and theirs are dropped."""
+    expansion = sites.expansion_of(description)
+    lattice = expansion.kind == sites.LATTICE
+    _check_parents(parents, lattice)
+    if IMAGE_COL not in parents.columns:
+        raise ValueError(
+            f"the parents carry no {IMAGE_COL}: an expansion keeps each particle's images, and these have none (a "
+            "coordinates set is cut first)"
+        )
+    parents = parents.reset_index(drop=True)
+    n = len(parents)
+    if n == 0:
+        raise ValueError("there is no particle to expand")
+    notes: list[str] = []
+    tomo = parents[TOMO_COL].astype(str).to_numpy()
+    uids = [parse_cell(v) for v in parents[UID_COL]] if UID_COL in parents.columns else [None] * n
+    names = (
+        parents[NAME_COL].astype(str).tolist()
+        if NAME_COL in parents.columns
+        else parents[IMAGE_COL].astype(str).tolist()
+    )
+    parent_key = [u if u is not None else _hash12(f"parent|{nm}") for u, nm in zip(uids, names, strict=True)]
+    if len(set(parent_key)) != n:
+        raise ValueError("two parents are the same particle (one uid or name twice): the set would hold doubles")
+    if lattice:
+        tube = parents[TUBE_COL].to_numpy()
+        assembly = np.array([f"f{_hash12(f'{t}|{tb}')}" for t, tb in zip(tomo, tube, strict=True)], dtype=object)
+    else:
+        assembly = np.array([uid_cell(k) for k in parent_key], dtype=object)
+
+    a = euler_matrices(*(parents[c].to_numpy(dtype=float) for c in ANGLE_COLS))
+    origin = (
+        parents[ORIGIN_COLS].to_numpy(dtype=float)
+        if all(c in parents.columns for c in ORIGIN_COLS)
+        else np.zeros((n, 3))
+    )
+    k = expansion.n
+    of_parent = np.repeat(np.arange(n), k)
+    index = np.tile(np.arange(k), n)
+    poses = np.einsum("nij,kjl->nkil", a, expansion.rotations).reshape(-1, 3, 3)
+    moved = (origin[:, None, :] - np.einsum("nij,kj->nki", a, expansion.offsets)).reshape(-1, 3)
+    rot, tilt, psi = euler_angles(poses)
+
+    dropped = [c for c in REFINED_SCORE_COLS if c in parents.columns]
+    if not lattice:
+        dropped += [c for c in ANGLE_PRIOR_COLS if c in parents.columns]
+    rows = parents.drop(columns=dropped).iloc[of_parent].reset_index(drop=True)
+    rows["rlnAngleRot"], rows["rlnAngleTilt"], rows["rlnAnglePsi"] = rot, tilt, psi
+    for i, c in enumerate(ORIGIN_COLS):
+        rows[c] = moved[:, i]
+    for i, c in enumerate(ORIGIN_PRIOR_COLS):
+        rows[c] = moved[:, i]
+    labels = expansion.labels[index]
+    digest = expansion.digest
+    rows[UID_COL] = [
+        uid_cell(_hash12(f"expand|{parent_key[p]}|{digest}|{lab}")) for p, lab in zip(of_parent, labels, strict=True)
+    ]
+    rows[PARENT_COL] = [uid_cell(parent_key[p]) for p in of_parent]
+    rows[ASSEMBLY_COL] = assembly[of_parent]
+    rows[INDEX_COL] = labels
+    if HALF_COL in parents.columns:
+        half = pd.to_numeric(parents[HALF_COL], errors="coerce")
+        split = int((half.groupby(assembly).nunique() > 1).sum())
+        if split:
+            notes.append(
+                f"{split:,} {'filaments' if lattice else 'particles'} have parents in both half-sets: the copies keep "
+                "their own particle's half (their images are its)"
+            )
+    else:
+        notes.append("the parents carry no half-set: the job reading the set draws the halves")
+    if dropped:
+        notes.append(f"not carried (they describe the parent's pose, not a copy's): {', '.join(dropped)}")
+    return Expanded(rows=rows, expansion=expansion, n_parents=n, notes=notes)
+
+
+__all__ = [
+    "ASSEMBLY_COL",
+    "DOUBLES_SHARE",
+    "INDEX_COL",
+    "PARENT_COL",
+    "Expanded",
+    "Placement",
+    "expand",
+    "place",
+    "segment_spacing",
+]

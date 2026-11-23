@@ -242,12 +242,19 @@ class TemplatePlan:
     lowpass: float | None = None
     repeat_ang: float | None = None  # an extension's shift along the filament's axis
     repeat_from: str = ""
+    # An EMDB map's or a resample's scale across Z and along it (a filament's lattice), when it is not 1 and 1
+    scale_xy: float | None = None
+    scale_z: float | None = None
+
+    @property
+    def scaled(self) -> bool:
+        return self.scale_xy is not None or self.scale_z is not None
 
     @property
     def key(self) -> str:
         """The same template made twice at once is made once."""
         start = self.source.template_path if self.source is not None else self.entry_id or self.shape
-        made = f"{self.pixel_size}:{self.box_size}:{self.lowpass}:{self.repeat_ang}"
+        made = f"{self.pixel_size}:{self.box_size}:{self.lowpass}:{self.repeat_ang}:{self.scale_xy}:{self.scale_z}"
         return f"make-template:{self.out_dir}:{self.kind}:{start}:{made}"
 
     def values(self) -> dict[str, Any]:
@@ -262,6 +269,8 @@ class TemplatePlan:
         elif self.kind != "flip":
             out.update(pixel_size=self.pixel_size, pixel_size_from=self.pixel_size_from, box_size=self.box_size)
             out["lowpass"] = SHAPE_LOWPASS if self.kind == "shape" and not self.lowpass else self.lowpass
+        if self.scaled:
+            out.update(scale_xy=self.scale_xy or 1.0, scale_z=self.scale_z or 1.0)
         return out
 
 
@@ -287,6 +296,8 @@ async def plan_template(
     box_size: int | None = None,
     lowpass: float | None = None,
     repeat_ang: float | None = None,
+    scale_xy: float | None = None,
+    scale_z: float | None = None,
 ) -> dict[str, Any]:
     """Settle a template to make, as the workbench's generators take it:
     - `shape`: an ellipsoid of `shape` (`x:y:z`, Å) at `pixel_size`, in its own box (`auto_box`, at least
@@ -300,6 +311,9 @@ async def plan_template(
     - `flip`: that template's other polarity;
     - `extend`: that template, a filament along Z, made to fill its box along Z with copies of itself shifted by
       whole repeats of `repeat_ang` (the species' repeat when not given).
+    An `emdb` or `resample` takes `scale_xy` and `scale_z` too: the map scaled about its centre by the one across
+    Z and the other along it before it is sampled (`volume_prep.resample_scaled`), for a filament whose lattice
+    differs from the deposit's. 1 and 1, or neither given, is RELION's own resample.
     A pixel size not given is the tomograms' (`template_pixel_size`); without tomograms it is a `needs` item, as
     is any other value the kind needs and was not given. `ok(plan=TemplatePlan)`."""
     sp = state.get_species(species_id)
@@ -317,9 +331,19 @@ async def plan_template(
     )
     problems: list[str] = []
     needs: list[dict[str, Any]] = []
-    for name, value in (("pixel_size", pixel_size), ("box_size", box_size), ("lowpass", lowpass)):
+    for name, value in (
+        ("pixel_size", pixel_size),
+        ("box_size", box_size),
+        ("lowpass", lowpass),
+        ("scale_xy", scale_xy),
+        ("scale_z", scale_z),
+    ):
         if value is not None and value <= 0:
             problems.append(f"{name}: must be > 0, not {value:g}")
+    if (scale_xy, scale_z) != (None, None) and (float(scale_xy or 1.0), float(scale_z or 1.0)) != (1.0, 1.0):
+        if kind not in ("emdb", "resample"):
+            problems.append(f"a scale applies to an EMDB map or a resample, not a {kind}")
+        plan.scale_xy, plan.scale_z = float(scale_xy or 1.0), float(scale_z or 1.0)
 
     if kind in ("resample", "lowpass", "flip", "extend"):
         plan.source, why = _source_template(sp, template_id)
@@ -517,6 +541,42 @@ async def _extend(state: ProjectState, plan: TemplatePlan) -> dict[str, Any]:
     )
 
 
+def _scale_text(plan: TemplatePlan) -> str:
+    return f", scaled ×{plan.scale_xy:g} across Z and ×{plan.scale_z:g} along it"
+
+
+async def _resample_scaled(plan: TemplatePlan, src: str) -> dict[str, Any]:
+    """`src` scaled and resampled in a worker (`volume_prep.resample_scaled`), as `process_volume_async` answers:
+    ok(path_white, path_black). The name says every value, so a file of that name on disk is this template and is
+    taken as it is."""
+    from services.templating import volume_prep
+    from services.workers import WorkKind, run_in_worker
+
+    stem = volume_prep.scaled_name(
+        Path(src).stem, plan.pixel_size, plan.box_size, plan.scale_xy, plan.scale_z, plan.lowpass
+    )
+    white = os.path.join(plan.out_dir, f"{stem}_white.mrc")
+    black = os.path.join(plan.out_dir, f"{stem}_black.mrc")
+    if await asyncio.to_thread(lambda: os.path.exists(white) and os.path.exists(black)):
+        return ok(path_white=white, path_black=black, notes=["on disk already: registered as it is"])
+    try:
+        info = await run_in_worker(
+            WorkKind.TEMPLATE,
+            volume_prep.resample_scaled,
+            src,
+            white,
+            black,
+            plan.pixel_size,
+            plan.box_size,
+            plan.scale_xy,
+            plan.scale_z,
+            plan.lowpass,
+        )
+    except (OSError, ValueError) as e:
+        return err(f"Not resampled: {e}")
+    return ok(path_white=white, path_black=black, notes=list(info.notes))
+
+
 async def make_template(
     backend, state: ProjectState, plan: TemplatePlan, progress_cb: Callable[[str], None] | None = None
 ) -> dict[str, Any]:
@@ -557,17 +617,25 @@ async def make_template(
         if not fetched["success"]:
             return err(f"EMDB fetch failed: {fetched['error']}")
         say(f"Resampling {os.path.basename(fetched['path'])}…")
-        res = await service.process_volume_async(
-            fetched["path"], plan.out_dir, plan.pixel_size, plan.box_size, plan.lowpass
-        )
-        source = f"EMDB-{plan.entry_id}"
+        if plan.scaled:
+            res = await _resample_scaled(plan, fetched["path"])
+        else:
+            res = await service.process_volume_async(
+                fetched["path"], plan.out_dir, plan.pixel_size, plan.box_size, plan.lowpass
+            )
+        source = f"EMDB-{plan.entry_id}" + (_scale_text(plan) if plan.scaled else "")
     else:
         name = os.path.basename(plan.source.template_path)
         say(f"{'Resampling' if plan.kind == 'resample' else 'Filtering'} {name}…")
-        res = await service.process_volume_async(
-            plan.source.template_path, plan.out_dir, plan.pixel_size, plan.box_size, plan.lowpass
-        )
+        if plan.scaled:
+            res = await _resample_scaled(plan, plan.source.template_path)
+        else:
+            res = await service.process_volume_async(
+                plan.source.template_path, plan.out_dir, plan.pixel_size, plan.box_size, plan.lowpass
+            )
         source = f"resampled from {name}" if plan.kind == "resample" else f"lowpass({plan.lowpass:g}Å) from {name}"
+        if plan.scaled:
+            source += _scale_text(plan)
     if not res["success"]:
         return err(f"Making the {plan.kind} template failed: {res['error']}")
 

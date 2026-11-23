@@ -276,3 +276,111 @@ def extend_file(src: str, dst: str, dst_negative: str, repeat_ang: float) -> Ext
             m.set_data(values)
             m.voxel_size = voxel
     return info
+
+
+# ── A scale RELION's resample cannot apply ───────────────────────────────────────────────────────
+
+# The filter that keeps the resampled template free of aliasing falls from 1 to 0 over this fraction of its
+# cut-off frequency.
+SCALED_EDGE = 0.1
+
+
+@dataclass(frozen=True)
+class Scaled:
+    source_apix: float
+    source_box: int
+    scale_xy: float
+    scale_z: float
+    cutoff_ang: float  # the finest detail kept, in the template's own Å
+    notes: tuple[str, ...]
+
+
+def scaled_name(stem: str, target_apix: float, target_box: int, scale_xy: float, scale_z: float, lowpass) -> str:
+    """The file stem of a scaled template: the resample's own name with the two scales."""
+    base = stem.replace("_white", "").replace("_black", "")
+    name = f"{base}_apix{target_apix:.2f}_box{target_box}_sxy{scale_xy:.4f}_sz{scale_z:.4f}"
+    return name + (f"_lp{int(lowpass)}" if lowpass else "")
+
+
+def resample_scaled(
+    src: str,
+    dst_white: str,
+    dst_black: str,
+    target_apix: float,
+    target_box: int,
+    scale_xy: float,
+    scale_z: float,
+    lowpass: float | None = None,
+) -> Scaled:
+    """`src` (any axis order, any cube) scaled by `scale_xy` across Z and `scale_z` along it about its box centre,
+    as the same structure on a lattice of other spacings (a filament's map whose deposited pixel, or whose
+    lattice, differs from the data's), and sampled at `target_apix` in a box of `target_box`: what RELION's
+    resample does with one scale, done with two. The source's face level is taken off and it is filtered first
+    so the new grid holds no frequency it cannot carry (and none finer than `lowpass`, Å, when given); then each
+    output voxel is the cubic spline of the source at the point the scale brings there. Box centres are RELION's
+    (voxel n // 2). Written σ-normalised as white, with its negative as black, never overwriting."""
+    from scipy import fft
+
+    sxy = float(scale_xy)
+    sz = float(scale_z)
+    if not (sxy > 0 and sz > 0 and np.isfinite(sxy) and np.isfinite(sz)):
+        raise ValueError(f"a scale is a number above 0 (got {scale_xy!r} across, {scale_z!r} along)")
+    with mrcfile.open(src, mode="r", permissive=True) as m:
+        header = m.header
+        order = (int(header.mapc), int(header.mapr), int(header.maps))
+        apix = float(m.voxel_size.x)
+        data = standard_order(np.asarray(m.data, dtype=np.float32), *order)
+    if apix <= 0:
+        raise ValueError(f"{Path(src).name} states no pixel size")
+    if data.ndim != 3 or len(set(data.shape)) != 1:
+        raise ValueError(f"{Path(src).name} is not a cube ({data.shape})")
+    n = data.shape[0]
+    notes = []
+    if order != (1, 2, 3):
+        notes.append(f"axes reordered from the header's MAPC, MAPR, MAPS = {order[0]}, {order[1]}, {order[2]}")
+    faces = np.concatenate([f.ravel() for ax in range(3) for f in (data.take(0, axis=ax), data.take(-1, axis=ax))])
+    data = data - float(faces.mean())
+
+    # The finest detail kept, in the template's Å: its Nyquist, or the lowpass when coarser. In the source a
+    # detail of d Å across Z was d / scale_xy Å, along Z d / scale_z Å.
+    cutoff = max(2.0 * float(target_apix), float(lowpass or 0.0))
+    full = (fft.fftfreq(n, d=apix) * cutoff).astype(np.float32)  # cycles per source Å, × the cut-off
+    half = (fft.rfftfreq(n, d=apix) * cutoff).astype(np.float32)
+    reach = np.sqrt(
+        (full[:, None, None] * sz) ** 2 + (full[None, :, None] * sxy) ** 2 + (half[None, None, :] * sxy) ** 2
+    )  # 1 at the cut-off
+    weight = np.clip((1.0 - reach) / SCALED_EDGE, 0.0, 1.0)
+    weight = (0.5 - 0.5 * np.cos(np.pi * weight)).astype(np.float32)
+    del reach
+    filtered = fft.irfftn(fft.rfftn(data, workers=-1) * weight, s=data.shape, workers=-1).astype(np.float32)
+    del weight
+    coeffs = ndimage.spline_filter(filtered, order=3, output=np.float32)
+    del filtered
+
+    # Output voxel (z, y, x) sits at (index − N // 2) · target Å; the scaled structure there is the source's at
+    # that point divided by the scale, in source voxels from the source's centre. One slab of Z at a time.
+    big_n = int(target_box)
+    axis = (np.arange(big_n) - big_n // 2) * float(target_apix)
+    centre = n // 2
+    across = axis / sxy / apix + centre
+    yy, xx = np.meshgrid(across, across, indexing="ij")
+    out = np.empty((big_n, big_n, big_n), dtype=np.float32)
+    for k, z in enumerate(axis / sz / apix + centre):
+        zz = np.full_like(yy, z)
+        out[k] = ndimage.map_coordinates(coeffs, [zz, yy, xx], order=3, mode="constant", cval=0.0, prefilter=False)
+    out = out.astype(np.float32)
+    inside = (n / 2) * apix
+    if inside * min(sxy, sz) < (big_n / 2) * float(target_apix):
+        notes.append(
+            f"the scaled map spans {2 * inside * sxy:.0f} Å across and {2 * inside * sz:.0f} Å along Z in a box of "
+            f"{big_n * float(target_apix):.0f} Å: zero beyond it"
+        )
+    std = float(out.std())
+    if not std > 0:
+        raise ValueError(f"{Path(src).name} scaled into this box holds nothing")
+    out = (out - float(out.mean())) / std
+    for path, values in ((dst_white, out), (dst_black, -out)):
+        with mrcfile.new(path, overwrite=False) as m:
+            m.set_data(np.ascontiguousarray(values, dtype=np.float32))
+            m.voxel_size = float(target_apix)
+    return Scaled(source_apix=apix, source_box=n, scale_xy=sxy, scale_z=sz, cutoff_ang=cutoff, notes=tuple(notes))

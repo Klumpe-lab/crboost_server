@@ -1,7 +1,9 @@
 """The Sub-units block of a Refine 3D's or an M refine's Results: the sub-particle sets made of the job's refined
 particles, and Make sub-particle set, whose dialog asks where one unit sits in a particle (an axis of its point
 group and a radius) or along a filament (a helix) and writes the copies as a set (services/particles/
-subparticles.py, roadmap 71). The kind of site follows from the job; nothing here chooses it."""
+subparticles.py, roadmap 71). The kind of site follows from the job; nothing here chooses it. Beside it, Make
+expansion set: the job's particles in every pose their symmetry, or their lattice, makes equal, the same images
+(`subparticles.expand`)."""
 
 from __future__ import annotations
 
@@ -25,6 +27,13 @@ RULE = (
     "and pose are its particle's followed by where the unit sits in it, and every copy of one capsid or filament "
     "is in one half-set. The images are cut anew, in a small box, by a Warp Export or a Reconstruct Particle that "
     "reads the set. The unit is a species of its own: its symmetry and Ø are what those jobs start from."
+)
+EXPANSION_RULE = (
+    "An expansion set holds every refined particle of this job in each pose its symmetry makes equal: the same "
+    "images, each copy's pose and origin changed. For segments of a filament, the registrations of their lattice "
+    "that the true repeat tells apart (a microtubule's 26 for its alpha/beta dimers: 13 seams by 2 registers), each "
+    "by its smallest move along the axis; for particles, the operators of the point group they were refined with. "
+    "A Class 3D with Skip alignment on the set scores every copy against one reference."
 )
 PHASE_RULE = (
     "Where one unit sits in the map: its angle about the axis from the map's X, and its height from the box "
@@ -88,8 +97,21 @@ class SubUnitsPanel:
                     '<table class="cb-atable"><thead><tr><th>set</th><th>sub-unit</th><th>where it sits</th>'
                     f"<th class='n'>copies</th><th>id</th></tr></thead><tbody>{body}</tbody></table>"
                 ).classes("cb-atable-wrap").style(f"max-height: 200px; {TABLE_ON_PANEL_STYLE}")
+            expansions = (r.get("expansion") or {}).get("sets") or []
+            if expansions:
+                body = "".join(
+                    f"<tr><td>{esc(s['name'])}</td><td>{esc(s['expansion'])}</td><td class='n'>{s['picks']:,}</td>"
+                    f"<td>{esc(s['set'])}</td></tr>"
+                    for s in expansions
+                )
+                ui.html(
+                    '<table class="cb-atable"><thead><tr><th>expansion set</th><th>poses</th>'
+                    f"<th class='n'>copies</th><th>id</th></tr></thead><tbody>{body}</tbody></table>"
+                ).classes("cb-atable-wrap").style(f"max-height: 160px; {TABLE_ON_PANEL_STYLE}")
             with ui.element("div").style(_ROW + " margin-top: 2px;"):
                 house_button("Make sub-particle set", lambda: self._open(r), tooltip=RULE)
+                if (r.get("expansion") or {}).get("kind"):
+                    house_button("Make expansion set", lambda: self._open_expansion(r), tooltip=EXPANSION_RULE)
 
     async def _open(self, r: dict) -> None:
         async with self._flight("make") as acquired:
@@ -98,6 +120,171 @@ class SubUnitsPanel:
             made = await _MakeDialog(self.backend, self.project_path, self.instance_id, r).run()
             if made and not self._box.is_deleted:
                 await self._load()
+
+    async def _open_expansion(self, r: dict) -> None:
+        async with self._flight("expand") as acquired:
+            if not acquired:
+                return
+            made = await _ExpandDialog(self.backend, self.project_path, self.instance_id, r).run()
+            if made and not self._box.is_deleted:
+                await self._load()
+
+
+class _ExpandDialog:
+    """An expansion, typed: for segments the lattice's helix, its repeat along the axis and the units to a true
+    repeat (filled from the last expansion, or the last sub-particle site, of this job's species); for particles
+    nothing to type. The count follows the values; Make set waits until they are whole."""
+
+    KEYS = ("twist_deg", "rise_ang", "axial_repeat_ang", "units_per_repeat")
+
+    def __init__(self, backend, project_path: Path, instance_id: str, readout: dict) -> None:
+        self.backend = backend
+        self.project_path = project_path
+        self.instance_id = instance_id
+        self.r = readout
+        self.e = readout["expansion"]
+        self.lattice = self.e["kind"] == sites.LATTICE
+        self.values: dict = {}
+        self.name = ""
+        self._fields: dict[str, ui.element] = {}
+        self._made = False
+        self._plan_ok = False
+        self._make_btn = None
+        self._replan = Debounced(self._schedule_plan)
+        self._flight = SingleFlight()
+
+    async def run(self) -> bool:
+        ensure_assets_loaded()
+        r = self.r
+        what = "segments of filaments" if self.lattice else f"particles refined with {r['group']}"
+        with (
+            dialog_host(),
+            ui.dialog() as self.dialog,
+            ui.card().classes("p-0").style("width: 520px; max-width: 95vw;"),
+        ):
+            with ui.column().classes("w-full gap-0").style("padding: 14px 16px 6px;"):
+                ui.label("Make expansion set").style(TITLE).tooltip(EXPANSION_RULE)
+                ui.label(f"from {r['job']}: {what}, the same images").style(TEXT)
+            with ui.column().classes("w-full").style("padding: 4px 16px 8px; gap: 8px;"):
+                if self.lattice:
+                    self._lattice_rows()
+                else:
+                    ui.label(
+                        f"Each particle in the {self.e.get('per_particle', '?')} poses of {r['group']}'s operators."
+                    ).style(TEXT)
+                with ui.element("div").style(_ROW):
+                    house_text(
+                        "name",
+                        value="",
+                        placeholder="the set's name",
+                        width="w-56",
+                        on_change=lambda e: setattr(self, "name", e.value or ""),
+                    )
+                self._count = ui.label("").style(TEXT + " min-height: 14px;")
+            with ui.row().classes("w-full justify-end items-center gap-2").style(FOOTER):
+                house_button("Cancel", self.dialog.close)
+                self._make_btn = house_button("Make set", self._make, kind="accent")
+        self._make_btn.disable()
+        last = self.e.get("last")
+        if self.lattice and last:
+            self._fill(last["values"] or {})
+        self._schedule_plan()
+        self.dialog.open()
+        await self.dialog
+        return self._made
+
+    def _lattice_rows(self) -> None:
+        with ui.element("div").style(_ROW):
+            self._fields["twist_deg"] = self._num("twist_deg", "twist °", "The lattice's twist per helical step.")
+            self._fields["rise_ang"] = self._num("rise_ang", "rise Å", "The lattice's rise per helical step.")
+            self._fields["axial_repeat_ang"] = self._num(
+                "axial_repeat_ang", "repeat Å", "The unit's repeat straight along the axis (a microtubule's monomer)."
+            )
+            self._fields["units_per_repeat"] = self._num(
+                "units_per_repeat",
+                "units",
+                "How many units make the true repeat along the axis, which the map could not tell apart: 2 for "
+                "a microtubule's alpha/beta dimers.",
+                width="w-12",
+            )
+        last = self.e.get("last")
+        if last:
+            where = f"the expansion {last['name']}" if last.get("set") else "the last sub-particle site of this species"
+            ui.label(f"values as in {where}").style(HELPER_STYLE).tooltip("Change any of them.")
+
+    def _num(self, key: str, label: str, hint: str, *, width: str = "w-20"):
+        return house_number(
+            label, value=None, format=_FLOAT, width=width, hint=hint, on_change=lambda e, k=key: self._set(k, e.value)
+        )
+
+    def _fill(self, values: dict) -> None:
+        for key in self.KEYS:
+            el, value = self._fields.get(key), values.get(key)
+            if el is not None and value is not None:
+                el.set_value(value)
+
+    def _set(self, key: str, value) -> None:
+        n = _number(value)
+        self.values[key] = (int(n) if n is not None and n >= 1 else None) if key == "units_per_repeat" else n
+        self._plan_ok = False
+        if self._make_btn is not None:
+            self._make_btn.disable()
+        self._replan()
+
+    def _given(self) -> dict:
+        return {k: v for k, v in self.values.items() if v is not None}
+
+    def _missing(self) -> list[str]:
+        if not self.lattice:
+            return []
+        words = {"twist_deg": "the twist", "rise_ang": "the rise", "axial_repeat_ang": "the repeat"}
+        words["units_per_repeat"] = "the units to a repeat"
+        return [w for k, w in words.items() if k not in self._given()]
+
+    def _schedule_plan(self) -> None:
+        missing = self._missing()
+        if missing:
+            self._plan_ok = False
+            self._make_btn.disable()
+            self._count.set_text("Not given yet: " + ", ".join(missing) + ".")
+            return
+        asyncio.create_task(self._plan())
+
+    async def _plan(self) -> None:
+        values = self._given()
+        res = await self.backend.expansion_plan(self.project_path, instance_id=self.instance_id, values=values)
+        if self._count.is_deleted or values != self._given():
+            return
+        if not res["success"]:
+            self._plan_ok = False
+            self._make_btn.disable()
+            self._count.set_text(res["error"])
+            return
+        p = res["plan"]
+        per = "segment" if self.lattice else "particle"
+        moved = f" · moved at most {p['max_shift_ang']:g} Å along the axis" if p["max_shift_ang"] else ""
+        self._count.set_text(f"{p['per_parent']} per {per} · {p['parents']:,} → {p['picks']:,}{moved}")
+        self._plan_ok = True
+        self._make_btn.enable()
+
+    async def _make(self) -> None:
+        async with self._flight("make") as acquired:
+            if not acquired or not self._plan_ok:
+                return
+            name = self.name.strip() or f"{self.instance_id} expanded"
+            self._count.set_text("making the set…")
+            res = await self.backend.create_expansion_set(
+                self.project_path, instance_id=self.instance_id, name=name, values=self._given()
+            )
+            if self._count.is_deleted:
+                return
+            if not res["success"]:
+                self._count.set_text(res["error"])
+                return
+            ps = res["set"]
+            self._made = True
+            ui.notify(f"Set {ps.name}: {ps.n_particles:,} copies in {ps.n_tomograms} tomograms", type="positive")
+            self.dialog.close()
 
 
 class _MakeDialog:

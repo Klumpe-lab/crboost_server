@@ -1860,6 +1860,43 @@ class CryoBoostBackend:
         state.bump_registry_rev()
         return ok(set=pset)
 
+    async def expansion_plan(self, project_path: Path, *, instance_id: str, values: dict[str, Any]) -> dict[str, Any]:
+        """What an expansion set of these values would hold (set_ops.expansion_plan), as ok(plan=…). Writes
+        nothing."""
+        project_path = Path(project_path)
+        state = self.state_service.state_for(project_path)
+        try:
+            plan = await asyncio.to_thread(
+                set_ops.expansion_plan, project_path, state, instance_id=instance_id, values=values
+            )
+        except FileNotFoundError as e:
+            return err(str(e), code=ErrorCode.NOT_WRITTEN_YET)
+        except ValueError as e:
+            return err(str(e))
+        except Exception as e:
+            logger.exception("Expansion plan of %s failed", instance_id)
+            return err(f"{type(e).__name__}: {e}")
+        return ok(plan=plan)
+
+    async def create_expansion_set(
+        self, project_path: Path, *, instance_id: str, name: str, values: dict[str, Any]
+    ) -> dict[str, Any]:
+        """A new extracted set of a job's refined particles in every pose of their expansion
+        (set_ops.create_expansion_set)."""
+        project_path = Path(project_path)
+        state = self.state_service.state_for(project_path)
+        try:
+            pset = await asyncio.to_thread(
+                set_ops.create_expansion_set, project_path, state, instance_id=instance_id, name=name, values=values
+            )
+        except (ValueError, FileNotFoundError, FileExistsError) as e:
+            return err(str(e))
+        except Exception as e:
+            logger.exception("Expansion set of %s failed", instance_id)
+            return err(f"{type(e).__name__}: {e}")
+        state.bump_registry_rev()
+        return ok(set=pset)
+
     # ── Controls (services/templating/control_templates.py, services/particles/set_ops.py) ──
 
     async def make_control_template(

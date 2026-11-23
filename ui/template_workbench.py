@@ -212,6 +212,29 @@ def _membership_moved(rows: dict, species, attr: str) -> bool:
 _UNSET_APIX = 10.0
 
 
+def _scales(scale_xy, scale_z) -> dict:
+    """The two scales as `plan_template` takes them: none when both are 1 (RELION's own resample)."""
+    sxy, sz = float(scale_xy or 1.0), float(scale_z or 1.0)
+    return {} if (sxy, sz) == (1.0, 1.0) else {"scale_xy": sxy, "scale_z": sz}
+
+
+def _scale_fields(owner, attr_xy: str, attr_z: str) -> None:
+    """A filament's lattice measured against the data's map: the map scaled across Z and along it before it is
+    sampled (1 and 1: as deposited)."""
+    for label, attr, hint in (
+        ("scale ⊥", attr_xy, "The map scaled across Z by this before it is sampled (1: as deposited)"),
+        ("scale ∥", attr_z, "The map scaled along Z by this before it is sampled (1: as deposited)"),
+    ):
+        _field(
+            label,
+            lambda attr=attr: ui.number(
+                value=getattr(owner, attr), step=0.001, min=0.5, max=2.0, format="%.4f"
+            ).bind_value(owner, attr),
+            width="w-20",
+            hint=hint,
+        )
+
+
 def _values_line(values: dict) -> str:
     """A made template's or mask's settled values, for the activity log and the task tray."""
     return " ".join(f"{k}={v:g}" if isinstance(v, float) else f"{k}={v}" for k, v in values.items() if k != "kind")
@@ -259,11 +282,15 @@ class TemplateWorkbench:
         self.emdb_box_size: int = 96
         self.emdb_lowpass: float | None = None
         self.emdb_input_val: str = ""
+        self.emdb_scale_xy: float = 1.0
+        self.emdb_scale_z: float = 1.0
 
         # Edit-current action forms
         self.resample_target_apix: float = _UNSET_APIX
         self.resample_target_box: int = 96
         self.resample_lowpass: float | None = None
+        self.resample_scale_xy: float = 1.0
+        self.resample_scale_z: float = 1.0
         self.lowpass_target: float = 30.0
 
         # Mask form
@@ -1353,6 +1380,7 @@ class TemplateWorkbench:
                 width="w-24",
                 hint="Optional filter (Å)",
             )
+            _scale_fields(self, "emdb_scale_xy", "emdb_scale_z")
         ui.label("Fetches the map from EMDB and resamples it.").classes(_HINT_CLS)
 
     # ── Edit Current — discrete action sections ──────────────────────
@@ -1444,6 +1472,7 @@ class TemplateWorkbench:
             ),
             hint="Optional lowpass (Å)",
         )
+        _scale_fields(self, "resample_scale_xy", "resample_scale_z")
 
     def _render_lowpass_inputs(self) -> None:
         _field(
@@ -1756,6 +1785,7 @@ class TemplateWorkbench:
             pixel_size=self.emdb_pixel_size,
             box_size=int(self.emdb_box_size),
             lowpass=self.emdb_lowpass if (self.emdb_lowpass and self.emdb_lowpass > 0) else None,
+            **_scales(self.emdb_scale_xy, self.emdb_scale_z),
         )
 
     async def _make_template(self, kind: str, title: str, **values) -> bool:
@@ -1833,6 +1863,7 @@ class TemplateWorkbench:
             pixel_size=self.resample_target_apix,
             box_size=int(self.resample_target_box),
             lowpass=self.resample_lowpass if (self.resample_lowpass and self.resample_lowpass > 0) else None,
+            **_scales(self.resample_scale_xy, self.resample_scale_z),
         )
 
     async def _apply_lowpass_to_current(self) -> None:

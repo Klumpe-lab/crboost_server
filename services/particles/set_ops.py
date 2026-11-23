@@ -892,7 +892,161 @@ def subparticle_readout(project_path: Path, state, instance_id: str) -> dict[str
                 "measured_on": ps.recipe.params.get("measured_on", ""),
             }
     out["last"] = last
+    out["expansion"] = _expansion_readout(project_path, state, instance_id, out)
     return out
+
+
+# ── Expansions: every pose a particle's symmetry or lattice makes equal, the same images ─────────
+
+
+def _expansion_readout(project_path: Path, state, instance_id: str, sub: dict[str, Any]) -> dict[str, Any]:
+    """The Sub-units block's expansion part: which kind the job's particles take, the sets already made, and the
+    lattice values a site of this species was last given (the helix the expansion starts from)."""
+    made = [
+        ps
+        for ps in list_sets(project_path)
+        if ps.recipe.op == SetOp.EXPANSION and ps.recipe.parents and ps.recipe.parents[0].instance_id == instance_id
+    ]
+    out: dict[str, Any] = {
+        "kind": None,
+        "sets": [
+            {"set": ps.id, "name": ps.name, "picks": ps.n_particles, "expansion": ps.details.get("text", "")}
+            for ps in made
+        ],
+        "last": None,
+    }
+    if sub["kind"] == sites.HELIX:
+        out["kind"] = sites.LATTICE
+        for ps in reversed(made):
+            out["last"] = {"set": ps.id, "name": ps.name, "values": ps.recipe.params.get("expansion")}
+            break
+        else:
+            helices = [v["site"] for v in sub["last"].values() if v["site"].get("axial_repeat_ang")]
+            if helices:
+                h = helices[0]
+                out["last"] = {
+                    "set": "",
+                    "name": "",
+                    "values": {
+                        "kind": sites.LATTICE,
+                        "twist_deg": h["twist_deg"],
+                        "rise_ang": h["rise_ang"],
+                        "axial_repeat_ang": h["axial_repeat_ang"],
+                        "units_per_repeat": None,
+                    },
+                }
+    elif sub["kind"] == sites.POINT_GROUP:
+        out["kind"] = sites.POINT_GROUP
+        out["per_particle"] = len(sites.operators(sub["group"]))
+    return out
+
+
+def expansion_description(refined: RefinedParticles, values: dict[str, Any]) -> dict[str, Any]:
+    """The expansion a job's particles take, from the values a person gives. Segments of filaments take a lattice's
+    registrations (its helix, the unit's repeat along the axis, how many units make the true repeat: all typed,
+    none filled in); particles the operators of the point group they were refined with."""
+    v = dict(values or {})
+    if refined.helix:
+        if v.get("kind") not in (None, sites.LATTICE):
+            raise ValueError(
+                f"{refined.parent.instance_id}'s particles are segments: they take a lattice's registrations"
+            )
+        return {
+            "kind": sites.LATTICE,
+            "twist_deg": v.get("twist_deg"),
+            "rise_ang": v.get("rise_ang"),
+            "axial_repeat_ang": v.get("axial_repeat_ang"),
+            "units_per_repeat": v.get("units_per_repeat"),
+        }
+    if refined.symmetry in ("", "C1"):
+        raise ValueError(f"{refined.parent.instance_id} refined without symmetry (C1): nothing to expand by")
+    if v.get("kind") not in (None, sites.POINT_GROUP) or v.get("group") not in (None, refined.symmetry):
+        raise ValueError(
+            f"{refined.parent.instance_id} refined with {refined.symmetry}: its operators are the expansion"
+        )
+    return {"kind": sites.POINT_GROUP, "group": refined.symmetry}
+
+
+def _expand(state, project_path: Path, instance_id: str, values: dict[str, Any]):
+    refined = refined_particles(state, project_path, instance_id)
+    description = expansion_description(refined, values)
+    table = read_table(refined.parent.particles_star)
+    return refined, table, subparticles.expand(table.df, description)
+
+
+def _expansion_funnel(refined: RefinedParticles, expanded) -> list[FunnelStep]:
+    per = "segment" if refined.helix else "particle"
+    e = expanded.expansion
+    return [
+        FunnelStep(label=refined.parent.label, kept=expanded.n_parents, removed=0),
+        FunnelStep(
+            label=f"{e.n} per {per}: {e.text()}",
+            kept=len(expanded.rows),
+            removed=0,
+            note=f"the same images; each copy moved at most {e.max_shift_ang:.1f} Å along its particle's axis",
+        ),
+    ]
+
+
+def expansion_plan(project_path: Path, state, *, instance_id: str, values: dict[str, Any]) -> dict[str, Any]:
+    """What `create_expansion_set` would make, without writing: the expansion as understood, its copies (turn and
+    move each), the counts and the funnel."""
+    refined, _table, expanded = _expand(state, project_path, instance_id, values)
+    e = expanded.expansion
+    return {
+        "expansion": e.description,
+        "text": e.text(),
+        "per_parent": e.n,
+        "parents": expanded.n_parents,
+        "picks": len(expanded.rows),
+        "max_shift_ang": round(e.max_shift_ang, 2),
+        "labels_count_steps": e.by_steps,
+        "copies": e.table(),
+        "funnel": [f.model_dump() for f in _expansion_funnel(refined, expanded)],
+        "notes": list(expanded.notes),
+    }
+
+
+def create_expansion_set(
+    project_path: Path, state, *, instance_id: str, name: str, values: dict[str, Any]
+) -> ParticleSet:
+    """A new extracted set: every refined particle of `instance_id` (a Refine 3D or an M refine) in each pose of
+    its expansion (`subparticles.expand`): the same images, the pose and the origin of each copy changed, the
+    copy's label in cbSubIndex and its particle's uid in cbParentUid. A job that classifies the set without
+    aligning (Class 3D, Skip alignment) scores every copy against one reference: which registration of a lattice,
+    which copy under a pseudo-symmetry, each particle fits best. The expansion is kept in the recipe."""
+    refined, table, expanded = _expand(state, project_path, instance_id, values)
+    e = expanded.expansion
+    rows = expanded.rows
+    job_dir = Path(refined.parent.particles_star).parent.name
+    per = f"{e.n} per {'segment' if refined.helix else 'particle'}"
+    pset = ParticleSet(
+        id=allocate_id(project_path, name),
+        name=name,
+        species_id=refined.species_id,
+        level=SetLevel.EXTRACTED,
+        recipe=Recipe(
+            op=SetOp.EXPANSION,
+            parents=[refined.parent],
+            params={"expansion": e.description, "description": f"{job_dir} expanded · {per}: {e.text()}"},
+        ),
+        n_particles=len(rows),
+        n_tomograms=rows[analytics.TOMO_COL].nunique(),
+        per_tomo=per_tomo_counts(rows),
+        funnel=_expansion_funnel(refined, expanded),
+        details={
+            "text": e.text(),
+            "per_parent": e.n,
+            "n_parents": expanded.n_parents,
+            "max_shift_ang": round(e.max_shift_ang, 2),
+            "labels_count_steps": e.by_steps,
+            "copies": e.table(),
+        },
+        notes=list(expanded.notes),
+        module=__name__,
+        tomograms_star=refined.parent.tomograms_star,
+    )
+    return publish_set(project_path, pset, lambda out: table.write(rows, out))
 
 
 # ── Random-position decoys ───────────────────────────────────────────────────────────────────────
@@ -1412,6 +1566,16 @@ def replay_set(project_path: Path, state, pset: ParticleSet) -> list[ParticleSet
                 name=name,
                 values=site,
                 measured_on=str(r.params.get("measured_on") or ""),
+            )
+        ]
+    if r.op == SetOp.EXPANSION:
+        return [
+            create_expansion_set(
+                project_path,
+                state,
+                instance_id=r.parents[0].instance_id,
+                name=name,
+                values=dict(r.params.get("expansion") or {}),
             )
         ]
     if r.op in (SetOp.DIFFERENCE, SetOp.INTERSECTION):

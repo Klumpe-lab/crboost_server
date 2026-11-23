@@ -806,6 +806,48 @@ async def make_subparticle_set(call: Call) -> dict[str, Any]:
     return res
 
 
+def _expansion_values(a) -> dict[str, Any]:
+    keys = ("twist_deg", "rise_ang", "axial_repeat_ang", "units_per_repeat")
+    return {k: getattr(a, k) for k in keys if getattr(a, k) is not None}
+
+
+async def plan_expansion_set(call: Call) -> dict[str, Any]:
+    """What Make expansion set would write, as its dialog counts it. Writes nothing."""
+    a = call.args
+    _jm, problem = call.job(a.job)
+    if problem:
+        return problem
+    res = await call.backend.expansion_plan(call.path, instance_id=a.job, values=_expansion_values(a))
+    if res["success"]:
+        res.update(res.pop("plan"))
+    res["ui_url"] = call.url(View.JOB, a.job)
+    return res
+
+
+async def make_expansion_set(call: Call) -> dict[str, Any]:
+    """A set of a job's refined particles in every pose of their expansion, as its Results' Make expansion set
+    does."""
+    a = call.args
+    _jm, problem = call.job(a.job)
+    if problem:
+        return problem
+    res = await call.backend.create_expansion_set(
+        call.path, instance_id=a.job, name=a.name, values=_expansion_values(a)
+    )
+    if res["success"]:
+        ps = res.pop("set")
+        res.update(
+            set=ps.id,
+            name=ps.name,
+            picks=ps.n_particles,
+            funnel=[f.model_dump() for f in ps.funnel],
+            notes=list(ps.notes),
+            expansion=ps.recipe.params.get("expansion"),
+        )
+    res["ui_url"] = call.url(View.JOB, a.job)
+    return res
+
+
 async def plan_run(call: Call) -> dict[str, Any]:
     res = await call.backend.pipeline_orchestrator.plan_run(call.path)
     res["ui_url"] = call.url()
@@ -1256,6 +1298,8 @@ async def make_template(call: Call) -> dict[str, Any]:
         box_size=a.box_size,
         lowpass=a.lowpass,
         repeat_ang=a.repeat_ang,
+        scale_xy=a.scale_xy,
+        scale_z=a.scale_z,
     )
     if not planned["success"]:
         return planned

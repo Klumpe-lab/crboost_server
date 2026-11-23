@@ -269,6 +269,25 @@ class MakeSubparticleSetIn(SubparticleSiteIn):
     name: str = Field(description="The set's name")
 
 
+class ExpansionIn(JobIn):
+    twist_deg: float | None = Field(
+        None, description="Filaments: the lattice's helical twist per step, as RELION takes it (particles: omitted)"
+    )
+    rise_ang: float | None = Field(None, description="Filaments: the lattice's rise per step, in Å")
+    axial_repeat_ang: float | None = Field(
+        None, description="Filaments: the unit's repeat straight along the axis, in Å (a microtubule's monomer repeat)"
+    )
+    units_per_repeat: int | None = Field(
+        None,
+        description="Filaments: how many units make the true repeat along the axis, which the refined map could not "
+        "tell apart (2 for a microtubule's alpha/beta dimers)",
+    )
+
+
+class MakeExpansionSetIn(ExpansionIn):
+    name: str = Field(description="The set's name")
+
+
 class TaskIn(_In):
     task_id: str = Field(description="The id a verb that runs in the background returned")
 
@@ -446,6 +465,15 @@ class MakeTemplateIn(SpeciesIn):
     )
     lowpass: float | None = Field(
         None, gt=0, description="Å; a shape is filtered at 45 Å and a PDB entry simulated at 10 Å when omitted"
+    )
+    scale_xy: float | None = Field(
+        None,
+        gt=0,
+        description="emdb, resample: the map scaled across Z by this before it is sampled (a filament's lattice "
+        "measured against the data's map); 1 when omitted",
+    )
+    scale_z: float | None = Field(
+        None, gt=0, description="emdb, resample: the map scaled along Z by this before it is sampled; 1 when omitted"
     )
 
 

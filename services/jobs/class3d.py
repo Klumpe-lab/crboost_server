@@ -27,6 +27,8 @@ class Class3DParams(AbstractJobParams):
         "symmetry",
         "ini_high",
         "particle_diameter",
+        "reference_from_template",
+        "reference_path",
         "solvent_mask_path",
         "mask_from_job",
         "skip_align",
@@ -60,7 +62,13 @@ class Class3DParams(AbstractJobParams):
             preferred_source="subtomoExtraction",
             needs_extracted=True,
         ),
-        InputSlot(key="input_reference", accepts=[JobFileType.REFERENCE_MAP], preferred_source="reconstructParticle"),
+        # A job's map, unless the species' template is the reference (reference_from_template).
+        InputSlot(
+            key="input_reference",
+            accepts=[JobFileType.REFERENCE_MAP],
+            preferred_source="reconstructParticle",
+            when="reference_from_job",
+        ),
         # A Mask job's mask, read only while mask_from_job is set; solvent_mask_path stays for a file made elsewhere.
         InputSlot(
             key="input_mask",
@@ -156,6 +164,23 @@ class Class3DParams(AbstractJobParams):
         description="Mask diameter (Angstroms, -1 = auto)",
         title="Mask diameter",
         json_schema_extra=form("Reference & mask", S, "Å"),
+    )
+
+    # A template in place of a job's map: a reference no job of the project has made, such as a deposited map that
+    # tells apart what the particles' own average blends (a microtubule's alpha and beta), to score fixed poses against.
+    reference_from_template: bool = Field(
+        default=False,
+        description="Start from the template below instead of a job's map (the reference input). The template must "
+        "be white, at the particles' pixel size and in their box; it is filtered to Low-pass reference before the "
+        "first iteration.",
+        title="Template as reference",
+        json_schema_extra=form("Reference & mask"),
+    )
+    reference_path: str = Field(
+        default="",
+        description="The template to start from: the species' selected template when the job was made",
+        title="Reference template",
+        json_schema_extra=form("Reference & mask", L),
     )
 
     # Optional mask
@@ -283,6 +308,25 @@ class Class3DParams(AbstractJobParams):
         input_opt = self.paths.get("input_optimisation", "")
         input_ref = self.paths.get("input_reference", "")
         return [("in_optimisation", str(input_opt)), ("in_3dref", str(input_ref))]
+
+    @property
+    def reference_from_job(self) -> bool:
+        """Whether the reference is a job's map (the reference input), as against the template."""
+        return not self.reference_from_template
+
+    def shows_param(self, name: str) -> bool:
+        if name == "reference_path":
+            return self.reference_from_template
+        return True
+
+    def run_problems(self) -> list[str]:
+        problems = list(super().run_problems())
+        if self.reference_from_template and not self.reference_path.strip():
+            problems.append(
+                "Template as reference is on and no template is named: select one on the Species page for new jobs, "
+                "or give its path here."
+            )
+        return problems
 
     def is_driver_job(self) -> bool:
         return True
