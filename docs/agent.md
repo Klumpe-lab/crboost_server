@@ -12,7 +12,12 @@ On the login node where your server runs (its startup banner names the node):
 ```bash
 claude mcp add --scope user crboost -- <checkout>/crboost mcp
 mkdir -p ~/.claude/skills && ln -s <checkout>/agent/skills/crboost ~/.claude/skills/crboost
+claude plugin marketplace add <checkout>/agent
+claude plugin install crboost-plan@crboost
 ```
+
+The last two install the plan pane (`agent/claude_plugin`, its README says what it does), read from the checkout
+itself: a `git pull` and `/reload-plugins` bring its changes.
 
 `crboost mcp` runs the forwarder with the checkout's own uv, which fetches its two dependencies (`mcp`, `httpx`)
 on first start. A user-scope entry belongs to one Claude Code login: with `CLAUDE_CONFIG_DIR` set, add it with that
@@ -46,10 +51,17 @@ The reads then run without a prompt, and so do plans. The agent sends a whole ch
 what the plan does: per project the values of a new one, the roster after the plan, every setting as
 now → after, deletions with their sizes, what the run submits. Then:
 
-- **In the terminal (the default):** the agent calls `apply_changes_now`, and the crboost MCP server opens a
-  dialog of its own in Claude Code (MCP elicitation): the gist in two lines, then a table per project as rows
-  (a new project's values, the jobs added, each setting now → after, deletions with sizes, the run). Accept
-  applies it as shown; Decline changes nothing; edits are made on the page. The server applies the plan only
+- **In the terminal (the default):** the agent calls `apply_changes_now`. With the plan pane installed, the plan
+  opens in a pane above the prompt: a table per project, a row per job the plan touches and a column per setting
+  it changes. The arrows move through the cells (the columns scroll sideways), Enter edits one, the line under the
+  table describes the cell, `a` applies and `d` declines; the agent's call waits for you and reads what you did,
+  your edits included. The edits and the decision go to the server through verbs the model is never offered
+  (`edit_plan`, `decide_plan`), and an edit rewrites the plan and checks it again as one on the page does.
+  Without the pane (not installed, a terminal too narrow, a plan that deletes for good), the crboost MCP server
+  opens a dialog of its own in Claude Code (MCP elicitation): the gist in two lines, then a row per project, per
+  job it changes (its settings now → after joined; jobs with the same changes share a row), per deletion and per
+  set of run resources. Accept applies it as shown; Decline changes nothing; edits are made on the page. The
+  server applies the plan only
   when the forwarder hands back the one-time token it got for that dialog, which
   the agent never sees, so neither the agent, an allow rule nor auto mode can say yes for you. That is why
   `apply_changes_now` can sit in the allow list. An Elicitation hook in your settings could answer the dialog:

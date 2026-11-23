@@ -79,7 +79,7 @@ def test_every_job_runs_a_tool_the_template_configures():
 
 def test_agent_api_verb_table():
     """Every verb's input schema builds as an MCP tool's, reads are named as reads, the instructions fit Claude
-    Code's limit, and /api/v1/tools serves exactly the table."""
+    Code's limit, and /api/v1/tools serves exactly the table less the crboost pane's verbs."""
     from types import SimpleNamespace
 
     from fastapi import FastAPI
@@ -99,7 +99,7 @@ def test_agent_api_verb_table():
     app = FastAPI()
     app.include_router(create_api_router(SimpleNamespace(), 0))
     served = TestClient(app).get("/api/v1/tools").json()
-    assert [t["name"] for t in served["tools"]] == list(VERBS)
+    assert [t["name"] for t in served["tools"]] == [name for name, v in VERBS.items() if not v.pane]
 
 
 _BUILD_APP = """

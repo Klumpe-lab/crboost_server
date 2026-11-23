@@ -606,3 +606,31 @@ class ApplyNowIn(ApplyIn):
     # Set by a forwarder that shows the dialog (it drops one an agent sends). Without it no token is handed out:
     # an older forwarder would pass the token on to the agent.
     dialog: SkipJsonSchema[bool] = False
+
+
+# ── The crboost pane in Claude Code (never listed as tools) ──
+
+
+class PlanChangeIn(PlanIn):
+    revision: int = Field(description="The revision the pane shows")
+    status: str = Field(description="The status the pane shows")
+    wait_s: float = Field(20.0, ge=0, le=25, description="How long to wait for the plan to move")
+
+
+class PaneEdit(_In):
+    project: str = Field(description="The project's folder, as the table names it (`key`)")
+    job: str = Field(description="The job's instance id")
+    kind: Literal["param", "slurm"]
+    field: str = Field(description="The setting's name")
+    value: str | int | float | bool | None = Field(description="What the person typed or picked")
+
+
+class EditPlanIn(PlanIn):
+    revision: int = Field(description="The revision the edits were made on")
+    edits: list[PaneEdit] = Field(default_factory=list)
+    keep: list[int] = Field(default_factory=list, description="Deletion steps to drop: what they delete is kept")
+
+
+class DecidePlanIn(PlanIn):
+    revision: int = Field(description="The revision the person decided on")
+    decision: Literal["apply", "reject"]

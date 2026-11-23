@@ -11,7 +11,11 @@ terminal (`services/agent_plan_view.py`).
 Two ways to carry it out, the same run of the steps behind both: `apply_changes` after the user approved on the
 page (allow-listed, refused before), and `apply_changes_now`, which the user confirms in a terminal dialog the
 MCP forwarder opens with the plan in it (`dialog_text`; a one-time token the agent never sees), refused for a plan
-that deletes something for good. The steps run in order through the same
+that deletes something for good. With the crboost pane installed in Claude Code (`agent/claude_plugin`), the
+pane takes `apply_changes_now`'s call: it draws the plan as tables (`get_plan_table`), sends the person's edits
+(`edit_plan`, the page's rewrite) and their Apply or Decline (`decide_plan`), and waits on `get_plan_change` so an
+edit or approval on the page reaches it too. Those four are never listed as tools: the model cannot call them.
+The steps run in order through the same
 dispatch as single calls, the gate checked again per step; the first that fails stops the plan. Nothing is rolled
 back: each step stands on its own, as a click in the UI does.
 """
@@ -32,6 +36,7 @@ from api.context import ApiContext, open_project
 from api.handlers import Call, _plain, _recipe
 from api.reach import write_refusal
 from services import job_params, pipeline_edit
+from services.agent_plan_table import deletion_steps, pane_edits, plan_table
 from services.agent_plan_view import dialog_form, overview, show
 from services.agent_plans import (
     Deletion,
@@ -43,6 +48,7 @@ from services.agent_plans import (
     ProjectPlan,
     StepState,
     get_plan_store,
+    steps_with_edits,
 )
 from services.background_tasks import get_background_task_registry
 from services.jobs.spec import display_name, instance_display_name
@@ -66,7 +72,7 @@ PERMANENT = {
     "delete_kitchen_subset",
 }
 # Never a plan step: plans do not nest.
-NOT_A_STEP = {"apply_changes", "apply_changes_now"}
+NOT_A_STEP = {"apply_changes", "apply_changes_now", "edit_plan", "decide_plan"}
 
 _ACQ_LABELS = {
     "pixel_size_angstrom": "Pixel size (Å)",
@@ -980,4 +986,97 @@ async def apply_changes_now(call: Call) -> dict[str, Any]:
         return err(f"That confirmation is not {plan.id}'s current one: nothing was applied. Ask again.", ui_url=url)
     plan.status = PlanStatus.APPROVED
     plan.decided_at = datetime.now()
+    return await _carry_out(call.ctx, plan, plan.revision)
+
+
+# ── The crboost pane in Claude Code ───────────────────────────────────────────
+#
+# `agent/claude_plugin` takes the agent's apply_changes_now and puts the plan in front of the user as tables they
+# move through, edit and decide in. These verbs are its own: served over HTTP with the user's token like every verb,
+# never in the tool list (`Verb.pane`), so the model has no way to edit or decide a plan.
+
+PANE_WAIT_STEP_S = 0.25
+
+
+async def get_plan_table(call: Call) -> dict[str, Any]:
+    plan, why = _plan_or_err(call.args.plan_id)
+    if why is not None:
+        return why
+    return ok(**plan_table(plan, plan_url(call.ctx, plan.id)))
+
+
+async def get_plan_change(call: Call) -> dict[str, Any]:
+    """Waits until the plan's revision or status is not what the pane shows (an edit or a decision, here or on the
+    page), or `wait_s` passed."""
+    store = get_plan_store()
+    deadline = asyncio.get_running_loop().time() + call.args.wait_s
+    while True:
+        plan = store.get(call.args.plan_id)
+        if plan is None:
+            return err(f"No plan {call.args.plan_id} (plans live in the server's memory: a restart forgets them).")
+        moved = plan.revision != call.args.revision or plan.status.value != call.args.status
+        if moved or asyncio.get_running_loop().time() >= deadline:
+            return ok(revision=plan.revision, status=plan.status.value, moved=moved, task_id=plan.task_id)
+        await asyncio.sleep(PANE_WAIT_STEP_S)
+
+
+def _stale(plan: Plan, revision: int, url: str) -> dict[str, Any] | None:
+    if not plan.editable:
+        return err(f"{plan.id} is {plan.status.value}: it can no longer be changed.", ui_url=url)
+    if revision != plan.revision:
+        return err(f"{plan.id} moved to revision {plan.revision} since: look at it again.", **plan_table(plan, url))
+    return None
+
+
+async def edit_plan(call: Call) -> dict[str, Any]:
+    """The person's edits in the pane, as the page makes them: each setting merged into the plan's steps (back to
+    what the job has now, it leaves the plan), each kept deletion's step dropped, and the plan rehearsed again under
+    a new revision. A refused edit changes nothing."""
+    plan, why = _plan_or_err(call.args.plan_id)
+    if why is not None:
+        return why
+    url = plan_url(call.ctx, plan.id)
+    stale = _stale(plan, call.args.revision, url)
+    if stale is not None:
+        return stale
+    try:
+        edits = pane_edits(plan, [e.model_dump() for e in call.args.edits])
+    except (LookupError, ValueError) as e:
+        return err(f"Not changed: {e}", **plan_table(plan, url))
+    keep = set(call.args.keep)
+    unknown = keep - deletion_steps(plan)
+    if unknown:
+        return err(f"Not changed: step {', '.join(map(str, sorted(unknown)))} deletes nothing.", ui_url=url)
+    if not edits and not keep:
+        return ok(**plan_table(plan, url))
+    res = await get_plan_store().revise(plan.id, steps_with_edits(plan, edits, keep))
+    if not res.get("success"):
+        return err(f"Not changed: {res.get('error')}", **plan_table(plan, url))
+    return ok(**plan_table(plan, url))
+
+
+async def decide_plan(call: Call) -> dict[str, Any]:
+    """The person's Apply or Decline in the pane. Apply approves the plan as it stands and carries it out, as the
+    page's Approve followed by apply_changes; a plan that deletes something for good is approved on its page."""
+    plan, why = _plan_or_err(call.args.plan_id)
+    if why is not None:
+        return why
+    url = plan_url(call.ctx, plan.id)
+    stale = _stale(plan, call.args.revision, url)
+    if stale is not None:
+        return stale
+    if call.args.decision == "reject":
+        plan.status = PlanStatus.REJECTED
+        plan.decided_at = datetime.now()
+        logger.info("Plan %s (%s) declined in the crboost pane", plan.id, plan.title)
+        return ok(status=plan.status.value, plan_id=plan.id, ui_url=url)
+    if plan.permanent_steps:
+        return err(
+            f"{plan.id} deletes something for good ({'; '.join(s.what for s in plan.permanent_steps)}): approve it "
+            "on its page.",
+            ui_url=url,
+        )
+    plan.status = PlanStatus.APPROVED
+    plan.decided_at = datetime.now()
+    logger.info("Plan %s (%s) applied from the crboost pane, revision %d", plan.id, plan.title, plan.revision)
     return await _carry_out(call.ctx, plan, plan.revision)
