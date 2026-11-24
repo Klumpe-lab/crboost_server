@@ -22,7 +22,7 @@ Families:
   Every cut, subset and class comes from the user.
 - running: plan_run, then run; stop, cancel_job, stop_after_iteration, cancel_leftovers, predict_tilts
 - deleting: delete_job (to Trash), delete_species, delete_template, delete_mask; clear_trash and delete_project
-  only as plan steps
+  only as plan steps; restore_from_trash brings trashed jobs back
 
 Rules:
 - More than one write is one plan: plan_changes with every step, then apply_changes_now(plan_id, revision): the

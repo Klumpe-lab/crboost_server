@@ -572,6 +572,12 @@ class ClearTrashIn(ProjectIn):
     )
 
 
+class RestoreTrashIn(ProjectIn):
+    names: list[str] | None = Field(
+        None, description="The Trash/ entries to put back on the roster (job folder names); all of them when omitted"
+    )
+
+
 # ── Change plans ──────────────────────────────────────────────────────────────
 
 

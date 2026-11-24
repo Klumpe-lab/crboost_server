@@ -45,7 +45,8 @@ something to see.
   you to edit that project.
 - Deleting: `delete_job` moves a job that ran to the project's Trash (recoverable) and names the jobs it fed;
   `delete_species`, `delete_template`, `delete_mask` delete files for good. `clear_trash` and `delete_project`
-  run only as steps of a plan approved on its page. Delete only what the user asked for.
+  run only as steps of a plan approved on its page. Delete only what the user asked for. `restore_from_trash`
+  puts trashed jobs back on the roster (a taken instance id comes back as the next free one).
 - Never edit `project_params.json` or any project file, and never call sbatch or scancel on a CryoBoost
   project: the server's in-memory state is the truth and overwrites what is changed behind it.
 

@@ -1518,6 +1518,12 @@ async def clear_trash(call: Call) -> dict[str, Any]:
     return res
 
 
+async def restore_from_trash(call: Call) -> dict[str, Any]:
+    res = await call.backend.restore_project_trash(call.path, call.args.names)
+    res["ui_url"] = call.url()
+    return res
+
+
 async def delete_project(call: Call) -> dict[str, Any]:
     """The whole project folder, for good. Refused while any of its jobs is queued or running."""
     live = sorted(iid for iid, jm in call.state.jobs.items() if jm.execution_status.is_live)

@@ -536,6 +536,16 @@ _VERBS: tuple[Verb, ...] = (
         h.delete_job,
     ),
     Verb(
+        "restore_from_trash",
+        "Put jobs back from the project's Trash onto its roster, as the Trash dialog's Restore does: the folder "
+        "goes back where it was and the job's settings with it (from its record, or an earlier copy of the project "
+        "file for a job removed before records were kept). A job whose instance id another has taken since comes "
+        "back under the next free one. Answers per job its instance id and per entry left in Trash why.",
+        m.RestoreTrashIn,
+        "write",
+        h.restore_from_trash,
+    ),
+    Verb(
         "delete_species",
         "Delete a species as its page does: its jobs to Trash, its template and mask files for good, its pick "
         "lists and its entry. Refused while one of its jobs is queued or running.",

@@ -41,6 +41,7 @@ from services.result import ErrorCode, err, ok
 from services.shared_files import make_group_writable_dir
 from services.tilt_series.preimport import DatasetOverview
 from services.scheduling_and_orchestration.pipeline_deletion_service import get_deletion_service
+from services.project_trash import entry_name, write_job_record
 
 if TYPE_CHECKING:
     from backend import CryoBoostBackend
@@ -289,12 +290,35 @@ class ProjectService:
             all_orphans = []
             deleted_count = 0
             errors = []
+            # What Restore needs, taken while the jobs are still in the state: each job's settings as the project
+            # file holds them, and every job's folder, by which its inputs are found again.
+            instances = {i: jm.relion_job_name.rstrip("/") for i, jm in state.jobs.items() if jm.relion_job_name}
+            records = {
+                jm.relion_job_name.rstrip("/"): (i, json.loads(jm.model_dump_json(fallback=str)))
+                for i, jm in state.jobs.items()
+                if jm.relion_job_name and jm.relion_job_name.rstrip("/") in {p.rstrip("/") for p in job_paths}
+            }
 
             for job_path in job_paths:
                 result = await deletion_service.delete_job(project_dir, job_path, recursive=False)
                 if result.success:
                     deleted_count += 1
                     all_orphans.extend(result.orphaned_jobs)
+                    rec = records.get(job_path.rstrip("/"))
+                    if rec is not None and (project_dir / "Trash" / entry_name(job_path)).is_dir():
+                        try:
+                            await asyncio.to_thread(
+                                write_job_record,
+                                project_dir,
+                                job_path,
+                                rec[0],
+                                rec[1],
+                                instances,
+                                state.job_path_mapping.get(rec[0]),
+                            )
+                        except OSError as e:
+                            logger.exception("Could not keep %s's settings in Trash/", job_path)
+                            errors.append(f"{job_path}: in Trash/, but its settings were not kept for Restore ({e})")
                 else:
                     errors.append(f"{job_path}: {result.error}")
             if readers is not None:

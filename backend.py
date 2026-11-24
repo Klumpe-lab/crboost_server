@@ -39,6 +39,7 @@ from services.background_tasks import ProgressCallback
 from services.project_delete import delete_project_dir, is_being_deleted
 from services.project_disk_usage import get_disk_usage_service, is_stale as is_disk_usage_stale
 from services.project_trash import clear_trash, list_trash, trash_summary
+from services.trash_restore import restore_from_trash
 from services.event_log import events
 from services.result import ErrorCode, err, ok
 from services.computing.slurm_service import SlurmService, crboost_job_name, write_sbatch_script
@@ -2445,6 +2446,11 @@ class CryoBoostBackend:
         if remaining == 0:
             await asyncio.to_thread(get_disk_usage_service().trash_cleared, project_dir)
         return result
+
+    async def restore_project_trash(self, project_path: Path, names: list[str] | None = None) -> dict[str, Any]:
+        """Put the named Trash/ entries, or all of them, back on the project's roster as they were removed
+        (`services/trash_restore.py`)."""
+        return await restore_from_trash(self, Path(project_path), names)
 
     async def transfer_project_ownership(self, project_path: Path, new_owner: str | None) -> dict[str, Any]:
         """Reassign a project's owner WITHOUT moving it on disk.

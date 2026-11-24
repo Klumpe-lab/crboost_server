@@ -213,16 +213,17 @@ def avatar_color(key: str) -> str:
 
 
 # Background-task keys of the roster's own work, per project path. While one runs, its project is out
-# of the list (a deletion) or its trash chip is (a clear), so nobody acts on what is going away.
+# of the list (a deletion) or its trash chip is (a clear, a restore), so nobody acts on what is going away.
 _DELETE_KEY = "delete-project:"
 _CLEAR_TRASH_KEY = "clear-trash:"
+_RESTORE_TRASH_KEY = "restore-trash:"
 
 
 def _running_roster_tasks() -> frozenset[str]:
     return frozenset(
         t.dedup_key
         for t in get_background_task_registry().all()
-        if t.is_running and t.dedup_key and t.dedup_key.startswith((_DELETE_KEY, _CLEAR_TRASH_KEY))
+        if t.is_running and t.dedup_key and t.dedup_key.startswith((_DELETE_KEY, _CLEAR_TRASH_KEY, _RESTORE_TRASH_KEY))
     )
 
 
@@ -1344,6 +1345,7 @@ class ProjectsOverview:
                 proj["resolved_path"] == self._current_resolved,
                 proj["resolved_path"] == self._selected_resolved,
                 _CLEAR_TRASH_KEY + path in self._running_tasks,
+                _RESTORE_TRASH_KEY + path in self._running_tasks,
                 tags,
                 tagging,
                 bool(armed) and self._carries(tags, armed),
@@ -2262,7 +2264,7 @@ class ProjectsOverview:
         measurement is newer than the trash's last change, else the number of removed jobs. A click
         lists them, sized afresh, and can clear them; in deletion mode the row is the only target."""
         n = proj.get("trash_count") or 0
-        if not n or _CLEAR_TRASH_KEY + proj["path"] in self._running_tasks:
+        if not n or {_CLEAR_TRASH_KEY + proj["path"], _RESTORE_TRASH_KEY + proj["path"]} & self._running_tasks:
             return
         usage: DiskUsage | None = proj.get("disk_usage")
         fresh = usage is not None and not usage.error and usage.measured_at >= (proj.get("trash_mtime") or 0.0)
@@ -2293,15 +2295,16 @@ class ProjectsOverview:
             with dialog_host(), ui.dialog() as dialog, ui.card().style("width: 600px; max-width: 95vw;"):
                 ui.label(f"Trash · {name}").style(f"{FONT} font-size: 13px; font-weight: 600; color: {CLR_HEADING};")
                 ui.label(
-                    "Removing a job moves its directory to Trash/, where it keeps its disk space. Clearing the "
-                    "trash deletes these directories permanently."
+                    "Removing a job moves its directory to Trash/, where it keeps its disk space. Restore puts a "
+                    "job back on the roster as it was; clearing the trash deletes these directories permanently."
                 ).style(f"{FONT} font-size: 12px; color: {CLR_LABEL}; margin-top: 4px;")
                 body = ui.column().classes("w-full").style("gap: 0; margin-top: 8px;")
                 with body:
                     self._trash_wait("Measuring Trash/ …")
                 with ui.row().classes("w-full justify-end mt-3 gap-2"):
                     house_button("Cancel", dialog.close)
-                    clear_btn = house_button("Clear trash", lambda: dialog.submit(True), kind="danger")
+                    restore_btn = house_button("Restore all", lambda: dialog.submit(("restore", None)))
+                    clear_btn = house_button("Clear trash", lambda: dialog.submit(("clear", None)), kind="danger")
             listed: dict[str, list] = {}
 
             async def measure():
@@ -2316,22 +2319,53 @@ class ProjectsOverview:
                             f"{FONT} font-size: 11px; color: {CLR_FAILED};"
                         )
                         clear_btn.disable()
+                        restore_btn.disable()
                         return
                     entries = listing["entries"]
                     if not entries:
                         ui.label("Trash/ is empty.").style(f"{FONT} font-size: 11px; color: {CLR_SUBLABEL};")
                         clear_btn.disable()
+                        restore_btn.disable()
                         return
                     total = sum(e.size_bytes for e in entries)
-                    self._render_trash_entries(entries, total)
+                    self._render_trash_entries(
+                        entries, total, on_restore=lambda e: dialog.submit(("restore", [e.name]))
+                    )
                 listed["entries"] = entries
                 clear_btn.set_text(f"Clear trash · {format_bytes(total)}")
 
             with dialog:
                 ui.timer(0.01, measure, once=True)
-            cleared = await dialog
-        if cleared:
+            answer = await dialog
+        if not answer:
+            return
+        action, names = answer
+        if action == "clear":
             self._clear_trash(project_dir, name, listed.get("entries"))
+        else:
+            self._restore_trash(project_dir, name, names)
+
+    def _restore_trash(self, project_dir: Path, name: str, names: list[str] | None):
+        """Put Trash/ entries back on the project's roster, in the background with its card in the tray; what
+        could not come back is named there."""
+
+        async def work(_progress_cb) -> str:
+            result = await self.backend.restore_project_trash(project_dir, names)
+            if not result["success"]:
+                raise RuntimeError(result["error"])
+            restored = result.get("restored") or []
+            moved = [f"{r['job_dir']} as {r['instance_id']}" for r in restored if r.get("was")]
+            done = f"{len(restored)} job{'s' if len(restored) != 1 else ''} back on the roster"
+            if moved:
+                done += f" ({len(moved)} under a new name: {', '.join(moved)})"
+            refused = result.get("refused") or []
+            if refused:
+                left = "; ".join(f"{r['entry']}: {r['why']}" for r in refused)
+                raise RuntimeError(f"{done}. Left in Trash/: {left}")
+            return done
+
+        what = f"{len(names)} job{'s' if len(names) != 1 else ''}" if names else "every job"
+        self._run_in_tray(f"Restore from trash · {name}", what, _RESTORE_TRASH_KEY + str(project_dir), work)
 
     def _clear_trash(self, project_dir: Path, name: str, entries: list | None):
         """Clear the project's Trash/ in the background: its chip leaves the row at once and the progress
@@ -2381,14 +2415,16 @@ class ProjectsOverview:
             ui.label(text).style(f"{FONT} font-size: 11px; color: {CLR_SUBLABEL};")
 
     @staticmethod
-    def _render_trash_entries(entries: list, total: int):
-        """One line per removed job: its type and instance, the Trash/ directory, when it last wrote, its size."""
+    def _render_trash_entries(entries: list, total: int, on_restore=None):
+        """One line per removed job: its type and instance, the Trash/ directory, when it last wrote, its size,
+        and (with `on_restore`) a button that puts it back on the roster."""
         cell = f"{MONO} font-size: 9px; white-space: nowrap;"
+        columns = "minmax(0, 1fr) auto auto auto" + (" auto" if on_restore else "")
         with ui.element("div").style(
-            "display: grid; grid-template-columns: minmax(0, 1fr) auto auto auto; column-gap: 14px; row-gap: 4px; "
+            f"display: grid; grid-template-columns: {columns}; column-gap: 14px; row-gap: 4px; "
             "align-items: baseline; width: 100%; max-height: 50vh; overflow-y: auto;"
         ):
-            for title in ("Removed job", "Directory", "Last written", "Size"):
+            for title in ("Removed job", "Directory", "Last written", "Size", *([""] if on_restore else [])):
                 ui.label(title).style(f"{FONT} font-size: 9px; font-weight: 600; color: {CLR_SUBLABEL};")
             for e in entries:
                 with ui.element("div").style("display: flex; align-items: baseline; gap: 6px; min-width: 0;"):
@@ -2409,6 +2445,8 @@ class ProjectsOverview:
                 )
                 if e.unreadable_dirs:
                     size.tooltip(f"{e.unreadable_dirs} unreadable director{'ies' if e.unreadable_dirs != 1 else 'y'}")
+                if on_restore:
+                    house_button("Restore", lambda e=e: on_restore(e))
         jobs = f"{len(entries)} removed job{'s' if len(entries) != 1 else ''}"
         lower_bound = "≥" if any(e.unreadable_dirs for e in entries) else ""
         ui.label(f"{jobs} · {lower_bound}{format_bytes(total)}").style(
