@@ -91,22 +91,57 @@ def check_helical_priors(input_optimisation: Path) -> None:
 TEMPLATE_PIXEL_TOLERANCE = 0.01
 
 
-def check_template_reference(input_optimisation: Path, reference: Path) -> None:
-    """A template stands in for a job's map only on the particles' own grid: relion_refine runs with
-    --trust_ref_size, which takes the reference's box and pixel size as the particles' without resampling it."""
-    import mrcfile
-
-    with mrcfile.open(reference, header_only=True, permissive=True) as mrc:
-        box_px, pixel_ang = int(mrc.header.nx), float(mrc.voxel_size.x)
+def _particle_grid(input_optimisation: Path) -> tuple[int, float]:
+    """The particles' box (px) and pixel (Å), from their optics; one grid or none."""
     particles_star, _ = _parse_optimisation_set(input_optimisation)
     optics, _, _ = _read_particles_star(particles_star)
     lacking = [c for c in ("rlnImageSize", "rlnImagePixelSize") if c not in optics.columns]
     if lacking:
-        raise ValueError(f"{particles_star} states no {lacking} in its optics: the template cannot be checked")
+        raise ValueError(f"{particles_star} states no {lacking} in its optics: the reference cannot be checked")
     boxes, pixels = set(optics["rlnImageSize"].astype(int)), set(optics["rlnImagePixelSize"].astype(float).round(4))
     if len(boxes) != 1 or len(pixels) != 1:
         raise ValueError(f"{particles_star} holds particles of several grids ({sorted(boxes)} px, {sorted(pixels)} Å)")
-    want_box, want_pixel = boxes.pop(), pixels.pop()
+    return boxes.pop(), pixels.pop()
+
+
+def _grid_of(volume: Path) -> tuple[int, float]:
+    import mrcfile
+
+    with mrcfile.open(volume, header_only=True, permissive=True) as mrc:
+        return int(mrc.header.nx), float(mrc.voxel_size.x)
+
+
+def reference_on_grid(input_optimisation: Path, reference: Path, job_dir: Path) -> Path:
+    """A job's map as the reference, on the particles' grid. relion_refine runs with --trust_ref_size, which takes
+    the reference's box and pixel size as the particles' without resampling it, so a map on another grid (a bin-2
+    refinement's, for one at bin 1) is resampled onto theirs first, as RELION's resample does
+    (volume_prep.resample_scaled at scale 1), into the job's folder."""
+    from services.templating.volume_prep import resample_scaled
+
+    box_px, pixel_ang = _grid_of(reference)
+    want_box, want_pixel = _particle_grid(input_optimisation)
+    if pixel_ang <= 0:
+        raise ValueError(f"The reference {reference} states no pixel size: it cannot be put on the particles' grid")
+    if box_px == want_box and abs(pixel_ang - want_pixel) <= TEMPLATE_PIXEL_TOLERANCE * want_pixel:
+        return reference
+    white, black = job_dir / "reference_on_grid.mrc", job_dir / "reference_on_grid_black.mrc"
+    for own in (white, black):
+        own.unlink(missing_ok=True)  # an earlier attempt's, made from the same reference
+    resample_scaled(str(reference), str(white), str(black), want_pixel, want_box, 1.0, 1.0)
+    black.unlink(missing_ok=True)  # RELION's references are white
+    print(
+        f"[DRIVER] Reference {reference.name} ({box_px} px at {pixel_ang:g} Å) resampled onto the particles' grid "
+        f"({want_box} px at {want_pixel:g} Å): {white.name}",
+        flush=True,
+    )
+    return white
+
+
+def check_template_reference(input_optimisation: Path, reference: Path) -> None:
+    """A template stands in for a job's map only on the particles' own grid: relion_refine runs with
+    --trust_ref_size, which takes the reference's box and pixel size as the particles' without resampling it."""
+    box_px, pixel_ang = _grid_of(reference)
+    want_box, want_pixel = _particle_grid(input_optimisation)
     problems = []
     if box_px != want_box:
         problems.append(f"its box is {box_px} px, the particles' {want_box} px")
@@ -189,6 +224,8 @@ def main():
         print(f"[DRIVER] Input reference: {input_reference}", flush=True)
         if params.reference_from_template:
             check_template_reference(input_optimisation, input_reference)
+        else:
+            input_reference = reference_on_grid(input_optimisation, input_reference, job_dir)
         print(f"[DRIVER] Job dir: {job_dir}", flush=True)
         require_images(_parse_optimisation_set(input_optimisation)[0])
         if params.helix:
