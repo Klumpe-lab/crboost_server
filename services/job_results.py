@@ -36,6 +36,7 @@ from services.array_tasks import manifest_items, scan_statuses, sort_ts_by_posit
 from services.dashboard_data import vis_asset_url
 from services.models_base import JobType
 from services.renders import Render
+from services.scheduling_and_orchestration import stop_after_iteration
 from services.workers import WorkKind
 
 logger = logging.getLogger(__name__)
@@ -1056,25 +1057,45 @@ def _class3d(r, jm, job_dir, reg, iid, tasks, thumb_dir) -> None:
         r.lines.append(f"class {c['class']} · {pct(c['distribution'])}{est}")
 
 
+_ITERATION_MODEL_RE = re.compile(r"(run(?:_ct\d+)?_it(\d{3}))_half1_model\.star")
+
+
+def _last_iteration(job_dir: Path) -> str | None:
+    """The file prefix of the newest iteration relion_refine wrote: by number, never by name (run_it006 sorts after
+    run_ct6_it016); of one number, the newest file, since a continuation writes the iteration it starts from again."""
+    found = [
+        (int(m.group(2)), p.stat().st_mtime, m.group(1))
+        for p in job_dir.glob("run*_it*_half1_model.star")
+        if (m := _ITERATION_MODEL_RE.fullmatch(p.name))
+    ]
+    return max(found)[2] if found else None
+
+
 @_reads(JobType.REFINE3D)
 def _refine3d(r, jm, job_dir, reg, iid, tasks, thumb_dir) -> None:
     """The converged run's gold-standard FSC of the unmasked half maps, else the last iteration's resolution."""
     model = job_dir / "run_model.star"
     converged = model.exists()
+    last = None
     if not converged:
-        models = sorted(job_dir.glob("run*_it*_half1_model.star"))
-        if not models:
+        last = _last_iteration(job_dir)
+        if last is None:
             r.headline = "no iteration written yet"
             return
-        model = models[-1]
+        model = job_dir / f"{last}_half1_model.star"
     general = _star(model).get("model_general")
     res = general.get("rlnCurrentResolution") if isinstance(general, dict) else None
-    where = "converged" if converged else f"so far, {model.name.split('_half1')[0]}"
+    ended = None if converged else stop_after_iteration.finished(job_dir)
+    if converged:
+        where = "converged"
+    elif ended:
+        where = f"ended at iteration {ended['iteration']}, not converged"
+    else:
+        where = f"so far, {last}"
     r.headline = f"{float(res):.2f} Å (gold-standard FSC, unmasked half maps) · {where}" if res else where
     volume = job_dir / "run_class001.mrc"
-    if not volume.is_file():
-        it = sorted(job_dir.glob("run*_it*_half1_class001.mrc"))
-        volume = it[-1] if it else volume
+    if not volume.is_file() and last is not None:
+        volume = job_dir / f"{last}_half1_class001.mrc"
     m = _map(job_dir, volume, volume.name, "the refined map")
     if m is not None:
         r.maps.append(m)

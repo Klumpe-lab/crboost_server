@@ -2582,6 +2582,48 @@ class CryoBoostBackend:
             "on from there.",
         )
 
+    async def finish_at_iteration(self, project_path: Path | str, instance_id: str) -> dict[str, Any]:
+        """End a Refine 3D at the last iteration that landed, with that iteration as its result
+        (`stop_after_iteration.finish`). A running one is cancelled first, losing the iteration in flight; one a
+        stop, a cancel or a time limit ended is finished as it is. It then reads Succeeded, so a Run starts the
+        jobs after it instead of continuing it."""
+        project_path = Path(project_path)
+        state = self.state_service.state_for(project_path)
+        job_model = state.jobs.get(instance_id)
+        if job_model is None:
+            return err(f"No job {instance_id} in {project_path.name}.")
+        if state.read_only_reason:
+            return err(state.read_only_reason, code=ErrorCode.NOT_WRITABLE)
+        if job_model.job_type not in stop_after_iteration.FINISHABLE:
+            return err(f"{instance_id} is a {job_model.job_type.value} job: only a Refine 3D ends at an iteration.")
+        status = job_model.execution_status
+        if status not in (JobStatus.RUNNING, JobStatus.FAILED) or not job_model.relion_job_name:
+            return err(f"{instance_id} is {status.value}: only a running or ended-early Refine 3D ends at one.")
+        job_dir = project_path / job_model.relion_job_name.rstrip("/")
+        landed = await asyncio.to_thread(stop_after_iteration.landed_iteration, job_dir)
+        if not landed:
+            return err(f"No iteration of {instance_id} has landed yet: there is nothing to end it at.")
+        if status == JobStatus.RUNNING:
+            cancelled = await self.pipeline_runner.cancel_job(project_path, instance_id)
+            if not cancelled["success"]:
+                return cancelled
+        try:
+            record = await asyncio.to_thread(stop_after_iteration.finish, job_dir)
+        except (FileNotFoundError, FileExistsError, OSError, ValueError) as e:
+            logger.exception("finish_at_iteration: %s %s", project_path.name, instance_id)
+            return err(f"{instance_id} not ended at iteration {landed}: {e}")
+        job_model.execution_status = JobStatus.SUCCEEDED
+        await self.state_service.save_project(project_path=project_path, force=True)
+        it = record["iteration"]
+        events.info(
+            "%s · %s ended at iteration %d, not converged: it is the job's result", project_path.name, instance_id, it
+        )
+        return ok(
+            iteration=it,
+            message=f"{instance_id} ended at iteration {it} ({record['from']}): its optimisation set, half maps and "
+            "their mean are what the jobs after it read. It did not converge; it reads Succeeded.",
+        )
+
     async def get_instance_logs(
         self, project_path: Path | str, instance_id: str, *, ts: str | None = None, lines: int = 200
     ) -> dict[str, Any]:

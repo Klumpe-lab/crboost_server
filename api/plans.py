@@ -46,13 +46,14 @@ from services.agent_plans import (
 )
 from services.background_tasks import get_background_task_registry
 from services.jobs.spec import display_name, instance_display_name
-from services.models_base import JobType, SpeciesOrigin
+from services.models_base import JobStatus, JobType, SpeciesOrigin
 from services.path_resolution_service import consumers_of
 from services.project_create import ACQUISITION_FIELDS
 from services.project_disk_usage import read_cache
 from services.project_state import ProjectState, get_project_state_for
 from services.project_trash import list_trash
 from services.result import ErrorCode, err, ok
+from services.scheduling_and_orchestration import stop_after_iteration
 
 logger = logging.getLogger(__name__)
 
@@ -198,6 +199,8 @@ def sentence(verb: str, a, state: ProjectState | None) -> str:
         return f"Cancel {j(a.job)}"
     if verb == "stop_after_iteration":
         return f"Let {j(a.job)} run on to its end" if a.withdraw else f"Stop {j(a.job)} once its iteration has landed"
+    if verb == "finish_at_iteration":
+        return f"End {j(a.job)} at its last landed iteration: that iteration is its result"
     if verb == "predict_tilts":
         return f"Run {j(a.job)}'s DL prediction"
     if verb == "cancel_predict_tilts":
@@ -325,7 +328,23 @@ def _rehearse(state: ProjectState, verb: str, a) -> dict[str, Any] | None:
         return job_params.set_input(state, a.job, a.slot, source=a.source, path=a.path, auto=a.auto, facet=a.facet)
     if verb == "reset_inputs":
         return job_params.reset_inputs(state, a.job)
+    if verb == "finish_at_iteration":
+        return _rehearse_finish(state, a.job)
     return None
+
+
+def _rehearse_finish(state: ProjectState, job: str) -> dict[str, Any]:
+    """A Refine 3D ended at an iteration, on the copy: it reads Succeeded, so the plan's Run starts the jobs after it
+    instead of continuing it. Whether an iteration has landed is said when the step is applied."""
+    jm = state.jobs.get(job)
+    if jm is None:
+        return err(f"No job {job}.")
+    if jm.job_type not in stop_after_iteration.FINISHABLE:
+        return err(f"{job} is a {jm.job_type.value} job: only a Refine 3D ends at an iteration.")
+    if jm.execution_status not in (JobStatus.RUNNING, JobStatus.FAILED):
+        return err(f"{job} is {jm.execution_status.value}: only a running or ended-early Refine 3D ends at one.")
+    jm.execution_status = JobStatus.SUCCEEDED
+    return ok()
 
 
 async def _rehearse_import_species(state: ProjectState, a) -> dict[str, Any]:

@@ -331,6 +331,17 @@ _VERBS: tuple[Verb, ...] = (
         h.stop_after_iteration,
         asks=True,
     ),
+    Verb(
+        "finish_at_iteration",
+        "End a Refine 3D at the last iteration that landed, with that iteration as its result (the job page's Stop "
+        "dialog, and the page of one a stop, cancel or time limit ended, offer the same): its optimisation set, half "
+        "maps and their mean are what the jobs after it read, and it reads Succeeded, so a Run starts them instead "
+        "of continuing it. A running one is cancelled first, losing the iteration in flight.",
+        m.JobIn,
+        "write",
+        h.finish_at_iteration,
+        asks=True,
+    ),
     # ── Species and templates ──
     Verb(
         "import_species",

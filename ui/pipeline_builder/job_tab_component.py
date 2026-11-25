@@ -402,6 +402,17 @@ def render_job_tab(
             house_button(
                 "Cancel", lambda: _handle_stop_job(job_type, instance_id, job_model, backend, ui_mgr, callbacks)
             )
+        elif (
+            job_type in stop_after_iteration.FINISHABLE
+            and job_model.execution_status == JobStatus.FAILED
+            and job_model.relion_job_name
+        ):
+            house_button(
+                "End here",
+                lambda: _handle_end_here(instance_id, job_model, backend, ui_mgr, callbacks),
+                tooltip="End this Refine 3D at the last iteration it finished: that iteration becomes its result and "
+                "the jobs after it read it. Run again instead goes on from there.",
+            )
 
         icon_button("refresh", lambda: _force_status_refresh(callbacks), tooltip="Refresh the job's status")
 
@@ -495,6 +506,12 @@ async def _handle_stop_job(
         and job_model.execution_status == JobStatus.RUNNING
     )
     asked = await asyncio.to_thread(stop_after_iteration.pending, job_dir) if at_iteration else None
+    # A Refine 3D may also end now at the last iteration that landed, with that iteration as its result.
+    landed = (
+        await asyncio.to_thread(stop_after_iteration.landed_iteration, job_dir)
+        if at_iteration and job_type in stop_after_iteration.FINISHABLE
+        else 0
+    )
 
     with ui.dialog() as dialog, ui.card().style("min-width: 360px; padding: 16px;"):
         ui.label(f"Cancel {instance_display_name(instance_id, job_model)}?").classes(
@@ -515,15 +532,25 @@ async def _handle_stop_job(
             ui.label(
                 "Or let the iteration it is on land first: it stops then, and run again it goes on from there."
             ).classes("text-sm text-gray-600 mt-2")
+        if landed:
+            ui.label(
+                f"Or end it now at iteration {landed}, the last one it finished: that iteration becomes its result "
+                "and the jobs after it read it."
+            ).classes("text-sm text-gray-600 mt-2")
         with ui.row().classes("mt-4 gap-2 justify-end w-full"):
             house_button("Cancel", lambda: dialog.submit(False))
             if asked is not None:
                 house_button("Run on", lambda: dialog.submit("withdraw"), tooltip="Take the stop back")
             elif at_iteration:
                 house_button("After this iteration", lambda: dialog.submit("iteration"))
+            if landed:
+                house_button(f"End at iteration {landed}", lambda: dialog.submit("finish"))
             house_button("Stop job", lambda: dialog.submit(True), kind="accent")
 
     confirmed = await dialog
+    if confirmed == "finish":
+        await _finish_at_iteration(instance_id, backend, ui_mgr, callbacks)
+        return
     if confirmed in ("iteration", "withdraw"):
         result = await backend.stop_after_iteration(project_path, instance_id, withdraw=confirmed == "withdraw")
         if result.get("success"):
@@ -546,6 +573,41 @@ async def _handle_stop_job(
         ui.notify(result.get("message", "Job cancelled."), type="warning", timeout=5000)
     else:
         ui.notify(f"Cancel failed: {result.get('error')}", type="negative", timeout=8000)
+
+
+async def _handle_end_here(instance_id: str, job_model, backend, ui_mgr: UIStateManager, callbacks) -> None:
+    """A Refine 3D a stop, a cancel or a time limit ended: end it at the last iteration it finished, once the user
+    has seen which (`backend.finish_at_iteration`)."""
+    job_dir = ui_mgr.project_path / job_model.relion_job_name.rstrip("/")
+    landed = await asyncio.to_thread(stop_after_iteration.landed_iteration, job_dir)
+    if not landed:
+        ui.notify("No iteration of this job has landed: there is nothing to end it at.", type="warning")
+        return
+    with ui.dialog() as dialog, ui.card().style("min-width: 360px; padding: 16px;"):
+        ui.label(f"End {instance_display_name(instance_id, job_model)} at iteration {landed}?").classes(
+            "text-base font-bold text-gray-800"
+        )
+        ui.label(
+            f"Iteration {landed}'s optimisation set and half maps become this job's result, with the mean of the "
+            "half maps as its map, and the jobs after it read them. It reads Succeeded; it did not converge."
+        ).classes("text-sm text-gray-600 mt-2")
+        with ui.row().classes("mt-4 gap-2 justify-end w-full"):
+            house_button("Cancel", lambda: dialog.submit(False))
+            house_button(f"End at iteration {landed}", lambda: dialog.submit(True), kind="accent")
+    if await dialog:
+        await _finish_at_iteration(instance_id, backend, ui_mgr, callbacks)
+
+
+async def _finish_at_iteration(instance_id: str, backend, ui_mgr: UIStateManager, callbacks) -> None:
+    acting = callbacks.get("pipeline_acting")
+    with acting() if acting else nullcontext():
+        result = await backend.finish_at_iteration(ui_mgr.project_path, instance_id)
+    if "rebuild_pipeline_ui" in callbacks:
+        callbacks["rebuild_pipeline_ui"]()
+    if result.get("success"):
+        ui.notify(result["message"], type="info", timeout=8000)
+    else:
+        ui.notify(result["error"], type="negative", timeout=8000)
 
 
 def _handle_subset(instance_id: str, callbacks: dict[str, Callable]) -> None:
