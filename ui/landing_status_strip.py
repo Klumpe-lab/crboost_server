@@ -32,7 +32,7 @@ from ui.components.copyable import copy_button, copy_on_click
 from ui.components.reactive import FingerprintedView
 from ui.config_settings_dialog import open_config_settings
 from ui.protocols_dialog import open_protocols_dialog
-from ui.user_settings_dialog import open_user_settings, toggle_dark
+from ui.user_settings_dialog import open_user_settings, theme_menu_button
 from ui.styles import MONO, SANS as FONT
 
 logger = logging.getLogger(__name__)
@@ -306,7 +306,7 @@ class LandingStatusStrip(FingerprintedView):
                 tooltip="Protocol bundles: a protocol's stages and parameters, or create a project from one",
             )
 
-            icon_button("contrast", toggle_dark, tooltip="Dark or light (the papers are in User settings)")
+            theme_menu_button()
             icon_button("person", open_user_settings, tooltip="User settings")
 
             icon_button(

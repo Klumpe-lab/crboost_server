@@ -14,11 +14,11 @@ from nicegui import ui
 from services.configs.config_service import get_config_service
 from services.configs.user_settings import UserSettings, load_user_settings, save_user_settings
 from services.curation import napari_link
-from ui.components.buttons import house_button
+from ui.components.buttons import house_button, icon_button
 from ui.components.dialogs import dialog_host
 from ui.components.fields import house_select
-from ui.dashboard.theme import THEMES, switch_theme, theme_of
-from ui.job_plugins._field_styles import HELPER_STYLE, LABEL_VOICE, PANEL_TITLE_STYLE
+from ui.dashboard.theme import PAPERS, THEMES, switch_theme, theme_of
+from ui.job_plugins._field_styles import HELPER_STYLE, LABEL_VOICE, PANEL_TITLE_STYLE, SANS
 
 logger = logging.getLogger(__name__)
 
@@ -31,8 +31,8 @@ AGENTS_HELP = (
     "plan page."
 )
 THEME_HELP = (
-    "How every page looks. Dark is charcoal with pale ink; the papers are light looks on softer grounds than white "
-    "(side by side on /dev/ideas). Shown at once; Save keeps it. A page's address can try one for itself: ?theme=dusk."
+    "How every page looks: Light, Dark, or a light look on a softer ground than white (Mist, Sage, Linen; side by "
+    "side on /dev/ideas). Shown at once; Save keeps it. A page's address can try one for itself: ?theme=mist."
 )
 DESKTOP_LABEL = "Start EisGreis with my remote desktop"
 DESKTOP_HELP = (
@@ -130,11 +130,10 @@ async def open_user_settings() -> None:
     dialog.open()
 
 
-async def toggle_dark() -> None:
-    """Dark if the page is not, light if it is; kept as the user's theme."""
+async def choose_theme(name: str) -> None:
+    """Put the page in a theme now and keep it as the user's."""
     settings = await asyncio.to_thread(load_user_settings)
-    now = theme_of(getattr(ui.context.client, "_cb_theme", settings.theme))
-    settings.theme = "light" if now.dark else "dark"
+    settings.theme = theme_of(name).name
     try:
         await asyncio.to_thread(save_user_settings, settings)
     except OSError as e:
@@ -142,3 +141,29 @@ async def toggle_dark() -> None:
         ui.notify(f"Not saved: {e}", type="negative")
         return
     switch_theme(settings.theme)
+
+
+def theme_menu_button() -> None:
+    """The half-moon: Light and Dark, the papers under them; the page's theme marked."""
+    items: dict[str, ui.menu_item] = {}
+
+    def mark(now: str) -> None:
+        for n, item in items.items():
+            ink = "font-weight: 600; color: var(--cb-ink-1, #12324f)" if n == now else "color: var(--cb-ink-2, #1e293b)"
+            item.style(replace=f"{SANS} font-size: 11px; min-height: 26px; padding: 0 14px; {ink};")
+
+    async def pick(name: str) -> None:
+        mark(name)
+        await choose_theme(name)
+
+    with icon_button("contrast"):
+        # Its tip to its left: below, it would lie over the open menu.
+        ui.tooltip("Theme").props("anchor='center left' self='center right'")
+        menu = ui.menu().props("auto-close anchor='bottom right' self='top right'")
+    with menu:
+        for group in (("light", "dark"), PAPERS):
+            if group is PAPERS:
+                ui.separator()
+            for name in group:
+                items[name] = ui.menu_item(THEMES[name].label, lambda n=name: pick(n))
+    mark(theme_of(getattr(ui.context.client, "_cb_theme", None)).name)

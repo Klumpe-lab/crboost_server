@@ -13,9 +13,8 @@ Three layers, each read by the one above it:
 3. **The themes** (`THEMES`): a theme is a set of values for the palette and the tokens, under
    `[data-cb-theme="<name>"]` on the page's root (or on any element, which themes only what is inside it:
    the boards of `/dev/ideas`). Light is the default and sets no attribute. Dark also turns on Quasar's dark
-   mode for the Quasar components that draw their own grounds. The papers (linen, mist, ...) are light themes
-   with softer grounds, some with a faint pattern on the desk; they are ideas, shown side by side on
-   `/dev/ideas` and selectable in User settings.
+   mode for the Quasar components that draw their own grounds. The papers (Mist, Sage, Linen) are light themes
+   on softer grounds than white. Every theme's desk wears the same dot grid (`--cb-desk-art`), in its own ink.
 
 The theme a page opens in is the user's (`UserSettings.theme`), or `?theme=<name>` in its address for that
 page only. `theme_head()` puts it on the page before its first paint; `apply_theme_js()` switches it live.
@@ -81,6 +80,9 @@ _LIGHT_TOKENS = """
     --cb-edge: #c9d6e3; --cb-edge-w: 1px; --cb-edge-shadow: none; --cb-hover: #eaf1f8; --cb-card-line: #d3dde8;
     --cb-card-radius: 3px; --cb-cap: #f4f8fc; --cb-card-shadow: none; --cb-pop-bg: #ffffff; --cb-pop-line: #c9d6e3;
     --cb-pop-shadow: 0 6px 18px rgba(16, 42, 67, 0.10); --cb-pop-radius: 2px;
+    /* The desk's dot grid, the same in every theme; each theme sets only the dots' ink. */
+    --cb-desk-dot: #cbd3dd; --cb-desk-art: radial-gradient(circle, var(--cb-desk-dot) 0.9px, transparent 1.25px);
+    --cb-desk-art-size: 14px 14px;
     /* Title stripes and view heads. */
     --cb-head: #f2f6fb; --cb-head-line: #dbe3ec; --cb-head-ink: #12324f; --cb-head-size: 12px; --cb-head-track: 0;
     --cb-head-pad: 5px; --cb-accent: #4a8fd4; --cb-accent-w: 2px; --cb-head-glint: transparent;
@@ -253,7 +255,8 @@ TAILWIND = {
 # What the ladder gets wrong, or what has no light value to derive from.
 _DARK_SET = {
     # Grounds: the desk darkest, the cards a step up, a pop-up a step further; the rail with the desk.
-    "--cb-desk": "#0e1116", "--cb-page": "#161a20", "--cb-surface": "#161a20", "--cb-panel": "#161a20",
+    "--cb-desk": "#0e1116", "--cb-desk-dot": "#232931", "--cb-page": "#161a20", "--cb-surface": "#161a20",
+    "--cb-panel": "#161a20",
     "--cb-view-head": "#161a20", "--cb-rail": "#11151a", "--cb-rail-line": "#232a33", "--cb-rail-on": "#222b36",
     "--cb-panel-line": "#262d36", "--cb-card-line": "#2c343e", "--cb-edge": "#2c343e", "--cb-hover": "#1e252e",
     "--cb-cap": "#1b2027", "--cb-pop-bg": "#1d232b", "--cb-pop-line": "#333c47",
@@ -326,9 +329,6 @@ def papered(hex_colour: str, card: tuple[float, float, float], desk_l: float | N
 class Paper:
     card: tuple[float, float, float]  # OKLCH of the cards (the views, the roster, dialogs)
     desk: tuple[float, float, float]  # OKLCH of the desk between them
-    art: str = ""  # a faint pattern on the desk: CSS background-image
-    art_size: str = "auto"
-    grain: bool = False  # a paper's grain on the cards too
 
 
 def _paper_values(p: Paper) -> dict[str, str]:
@@ -342,24 +342,12 @@ def _paper_values(p: Paper) -> dict[str, str]:
         if _is_hex(v) and (moved := papered(v, p.card)) is not None:
             out[k] = moved
     rail = from_oklch((p.card[0] + p.desk[0]) / 2, p.desk[1], p.desk[2])
-    out |= {
+    return out | {
         "--cb-page": card, "--cb-surface": card, "--cb-panel": card, "--cb-view-head": card, "--cb-pop-bg": card,
         "--cb-field-bg": from_oklch(min(p.card[0] + 0.012, 1.0), p.card[1] * 0.6, p.card[2]),
         "--cb-desk": desk, "--cb-rail": rail, "--cb-bm-paper": from_oklch(p.card[0] - 0.02, p.card[1], p.card[2]),
-        "--cb-white": card, "--color-white": card, "--cb-desk-art": p.art or "none", "--cb-desk-art-size": p.art_size,
+        "--cb-white": card, "--color-white": card,
     }  # fmt: skip
-    if p.grain:
-        out["--cb-card-art"] = _GRAIN
-    return out
-
-
-# A paper's grain: fractal noise, very faint, as a tiled SVG.
-_GRAIN = (
-    "url(\"data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160'>"
-    "<filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/>"
-    "<feColorMatrix values='0 0 0 0 0.35  0 0 0 0 0.3  0 0 0 0 0.22  0 0 0 0.05 0'/></filter>"
-    "<rect width='100%' height='100%' filter='url(%23n)'/></svg>\")"
-)
 
 
 # ── The themes ───────────────────────────────────────────────────────────────────────────────────────────────
@@ -376,40 +364,21 @@ def _paper(name: str, label: str, note: str, paper: Paper) -> Theme:
     return Theme(name, label, note, values=_paper_values(paper))
 
 
-_GRID = (
-    "linear-gradient(rgba(112, 96, 64, 0.075) 1px, transparent 1px), "
-    "linear-gradient(90deg, rgba(112, 96, 64, 0.075) 1px, transparent 1px)"
-)
-_DOTS = "radial-gradient(circle, rgba(52, 72, 98, 0.16) 0.9px, transparent 1.2px)"
-_HATCH = "repeating-linear-gradient(135deg, rgba(60, 72, 88, 0.05) 0 1px, transparent 1px 7px)"
-
 THEMES: dict[str, Theme] = {
     t.name: t
     for t in (
-        Theme("light", "Light", "Today's look: white cards on a pale blue-grey desk."),
+        Theme("light", "Light", "White cards on a pale blue-grey desk."),
         Theme("dark", "Dark", "Charcoal cards on a near-black desk, pale ink, the same states.", True, _dark_values()),
-        _paper("linen", "Linen", "Warm off-white cards on a sand desk; the inks stay slate.",
-               Paper(card=(0.972, 0.010, 85.0), desk=(0.915, 0.016, 80.0))),
-        _paper("parchment", "Parchment", "A yellower, older paper: warmest of the lot, lowest blue.",
-               Paper(card=(0.962, 0.022, 90.0), desk=(0.900, 0.028, 84.0))),
-        _paper("stone", "Stone", "Neutral warm grey: no tint you notice, just less glare.",
-               Paper(card=(0.958, 0.004, 75.0), desk=(0.895, 0.006, 75.0))),
         _paper("mist", "Mist", "Cool grey cards, a deeper blue-grey desk: Harbor, a notch dimmer.",
                Paper(card=(0.955, 0.006, 250.0), desk=(0.885, 0.012, 250.0))),
         _paper("sage", "Sage", "A faint green-grey: calm, low contrast, far from white.",
                Paper(card=(0.962, 0.012, 145.0), desk=(0.902, 0.016, 150.0))),
-        _paper("dusk", "Dusk", "Dim light: grey cards on a slate desk, between light and dark.",
-               Paper(card=(0.905, 0.008, 250.0), desk=(0.815, 0.014, 250.0))),
-        _paper("graph", "Graph paper", "Linen with a faint 16 px grid on the desk.",
-               Paper(card=(0.972, 0.010, 85.0), desk=(0.925, 0.016, 80.0), art=_GRID, art_size="16px 16px")),
-        _paper("dots", "Dot grid", "Mist with the branch map's dotted paper on the desk.",
-               Paper(card=(0.955, 0.006, 250.0), desk=(0.895, 0.012, 250.0), art=_DOTS, art_size="14px 14px")),
-        _paper("hatch", "Hatch", "Stone with a fine diagonal hatch on the desk.",
-               Paper(card=(0.958, 0.004, 75.0), desk=(0.905, 0.006, 75.0), art=_HATCH)),
-        _paper("grain", "Paper grain", "Linen with a paper's grain on the cards and the desk.",
-               Paper(card=(0.970, 0.011, 85.0), desk=(0.915, 0.016, 80.0), art=_GRAIN, grain=True)),
+        _paper("linen", "Linen", "Warm off-white cards on a sand desk; the inks stay slate.",
+               Paper(card=(0.972, 0.010, 85.0), desk=(0.915, 0.016, 80.0))),
     )
 }  # fmt: skip
+# The papers, listed under Light and Dark wherever a theme is picked.
+PAPERS = tuple(n for n, t in THEMES.items() if n != "light" and not t.dark)
 DEFAULT_THEME = "light"
 
 
@@ -427,7 +396,7 @@ def _decls(values: dict[str, str]) -> str:
 _REFERRING = {k: v for k, v in LIGHT_TOKENS.items() if "var(" in v}
 
 # What every theme other than light needs besides values: Quasar's light components draw white grounds of their
-# own, and the desk and the cards wear the theme's pattern.
+# own.
 _THEMED_RULES = """
 [data-cb-theme]:not([data-cb-theme="light"]) :is(.q-card, .q-menu, .q-table__container, .q-table__card,
     .q-list--bordered, .q-expansion-item__content, .q-dialog .q-card) { background: var(--cb-surface); }

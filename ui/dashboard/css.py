@@ -2404,7 +2404,8 @@ _BRANCH_MAP_CSS = """
 # What rode with the values before they moved to ui/dashboard/theme.py: the page's ground, the job page's
 # two columns, and the corners Quasar and Tailwind draw by default at the look's radii.
 _CHROME_CSS = """
-body { background: var(--cb-page) !important; }
+body { background: var(--cb-page) !important; background-image: var(--cb-desk-art) !important;
+    background-size: var(--cb-desk-art-size) !important; }
 /* A wide job page in two columns: Parameters on the left (its groups in columns of 330 px), the 360 px rail
  * on the right (Inputs & Outputs over SLURM), the folded sections across both below; a job's Results, once it has
  * run, across both on top. Narrower than 860 px it stays one column. */

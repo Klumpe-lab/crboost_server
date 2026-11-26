@@ -458,7 +458,14 @@ class _PlanView(FingerprintedView):
 
 
 def render_agent_plan_page(plan_id: str) -> None:
-    with ui.column().classes("w-full items-center bg-gray-50").style("min-height: 100vh; padding: 18px 16px;"):
+    with (
+        ui.column()
+        .classes("w-full items-center bg-gray-50")
+        .style(
+            "min-height: 100vh; padding: 18px 16px; background-image: var(--cb-desk-art, none); "
+            "background-size: var(--cb-desk-art-size, auto);"
+        )
+    ):
         container = ui.column().classes("w-full").style("max-width: 1180px; gap: 12px;")
         view = _PlanView(container, plan_id)
         view.refresh()
