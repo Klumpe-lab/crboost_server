@@ -218,9 +218,14 @@ def write_optimisation_set(
     path.write_text("\n".join([*lines, ""]))
 
 
+# A loop row is split on whitespace, so a cell can never be empty: a missing value written as nothing leaves the
+# row one column short and RELION refuses the file. `nan` reads back as missing here and as NaN in RELION.
+MISSING_STAR_VALUE = "nan"
+
+
 def _format_star_value(x: Any) -> str:
     if pd.isna(x):
-        return ""
+        return MISSING_STAR_VALUE
     return str(x)
 
 
