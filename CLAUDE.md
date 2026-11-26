@@ -36,7 +36,7 @@ The Python environment is a build product: `.uv/env/<python>-<hash of the lock's
 it is missing and never modified afterwards, so a lock change builds a new one beside the old and a running server
 keeps its own. `venv` is only a convenience link to the latest. `./crboost env` prints the path, `./crboost clean`
 lists what is unused. Torch is not in it: the DL tilt filter's network runs in the `tilt_filter` container
-(`filterTilts/deepLearning/predict.py`). Design: `docs/roadmaps/roadmap_39-python-environment-and-setup.md` S3 and S6.
+(`filterTilts/deepLearning/predict.py`). Design: `docs/roadmaps/completed/roadmap_39-python-environment-and-setup.md` S3 and S6.
 
 ## Configuration
 

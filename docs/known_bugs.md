@@ -59,7 +59,7 @@ error flips the CTF phase beyond ~20 Å, and those tilts cancel signal in every 
 tomo CTF refinement cannot rescue it (search range ±3000–6000 Å, errors up to 40 000 Å). Everything from
 extraction on must be re-run once the fits are right.
 
-**What the code should do (open).** Scoped as `docs/roadmaps/roadmap_19-ctf-fit-outlier-check.md` (2026-09-09): an
+**What the code should do (open).** Scoped as `docs/roadmaps/completed/roadmap_19-ctf-fit-outlier-check.md` (2026-09-09): an
 independent 1D defocus estimate per tilt from Warp's own `PS1D` / `TiltPS1D`, with the scan window and band
 read from the same XML (no dataset numbers in the check), a `diverged | unverifiable | ok` verdict per tilt in
 the registry, Journey and job tabs, job failure when a quarter of the series diverged, and the hand verdict
