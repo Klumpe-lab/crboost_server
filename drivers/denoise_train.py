@@ -460,6 +460,9 @@ def main():
             "unet_n_first": 16,
             "learning_rate": safe_lr,
             "gpu_id": 0,
+            # A retry runs in this job's folder again: extraction writes over the patches its failed attempt left in
+            # train_data/, which it otherwise refuses (HOTFIXES H49).
+            "overwrite": True,
         }
 
         with open(config_json_path, "w") as f:
