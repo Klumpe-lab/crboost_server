@@ -85,6 +85,15 @@ description and the UI label in GUI terms (order + 1 at oversampling 1).
 
 ## 3. Long tilt-series names break AreTomo's IMOD output; Warp drops the series and the pipeline runs on unaligned angles
 
+**2026-11-25: the limit is on a path, not the name.** AreTomo2 keeps the absolute path of the stack it reads
+(`.staging/task_<ts>/warp_tiltseries/tiltstack/<ts>/<ts>.st` in the alignment job) in 256 characters. From a
+256-character path on, the `.tlt` is named after the path's tail from its 257th character (`t` at 257,
+`25_Position_1.st` at 272), or not written at all (256); 255 aligns. Measured with AreTomo2 alone from both Warp
+images at folder depths 120–230 (roadmap 63 §7). The series name is in that path three times, which is why the
+lab's projects broke at a name length; a project under a deeper base breaks with shorter names: the images test
+project under `/scratch/.../crboost_images/test_base/` lost its 38-character series. Alignment now also runs a
+series under the alias when its stack path would pass 255 (`ARETOMO_PATH_MAX`, `aretomo_stack_path`), and fails
+it with the reason when even the alias path would.
 **Status:** WORKED AROUND 2026-10-04; limit lowered to 43 on 2026-11-15 for AreTomo2. Alignment runs a name over
 43 characters under a short alias (`drivers/ts_alignment.py` `staged_ts_name`, `rename_alias_files`, limit
 `ARETOMO_TS_NAME_MAX = 43` in `services/configs/mdoc_service.py`). The alias itself works (the reruns of

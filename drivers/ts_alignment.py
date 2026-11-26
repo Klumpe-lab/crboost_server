@@ -25,8 +25,9 @@ Enumeration and staging:
   star is drift: it stays in the manifest and its task fails fast with the
   reason (the others proceed; it is dropped). Extra files the registry
   doesn't know are warned about and never dispatched.
-- A name longer than AreTomo can take (ARETOMO_TS_NAME_MAX) runs under a short
-  alias inside its staging dir and is renamed back on collect.
+- A series AreTomo would write a wrong `.tlt` for (a name over ARETOMO_TS_NAME_MAX, or a
+  staged stack path over ARETOMO_PATH_MAX) runs under a short alias inside its staging dir
+  and is renamed back on collect.
 
 Per-TS alignment failure is normal in cryo-ET: failed or missing TS are dropped
 from aggregation by ArrayDriver's tolerant tally; only a total wipeout fails the
@@ -36,6 +37,7 @@ The mode dispatch, both bootstraps, manifest lookup, exclusions, tally and exit
 code all live in ArrayDriver; this file is the alignment-specific hooks.
 """
 
+import os
 import shutil
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -90,18 +92,33 @@ def build_alignment_command(params: TsAlignmentParams) -> ToolCommand | str:
     return f"echo 'ERROR: Alignment method {params.alignment_method} not implemented'; exit 1;"
 
 
-# The name a tilt-series runs under in its staging dir when its own name is longer than
-# AreTomo can take: AreTomo writes no IMOD `.tlt` past ARETOMO_TS_NAME_MAX characters,
-# and WarpTools then drops the series as unselected (docs/known_bugs.md #3). A staging dir
-# holds exactly one series, so one fixed alias cannot collide; WarpTools names every output
-# after the tomostar, and collect renames them back.
+# The name a tilt-series runs under in its staging dir when AreTomo would write a wrong IMOD
+# `.tlt` for its own, and WarpTools then drops the series as unselected (docs/known_bugs.md #3).
+# A staging dir holds exactly one series, so one fixed alias cannot collide; WarpTools names
+# every output after the tomostar, and collect renames them back.
 ARETOMO_ALIAS = "crbalias"
+# AreTomo keeps the absolute path of the stack it reads in 256 characters: from a 256-character
+# path on, the path's tail from its 257th character becomes the `.tlt`'s name (`t`,
+# `25_Position_1.st`), or there is none. 255 aligns. AreTomo2 1.0.0 in both Warp images, found
+# 2026-11-25 on a project under /scratch (roadmap 63 §7). The series' name is in the path three
+# times, so a long name brings it on in a deep project; a short alias takes two of them out.
+ARETOMO_PATH_MAX = 255
 
 
-def staged_ts_name(ts_name: str, method: AlignmentMethod) -> str:
+def aretomo_stack_path(job_dir: Path, ts_name: str, name: str) -> str:
+    """The absolute path of the stack AreTomo reads when `ts_name` runs as `name` in its staging
+    dir: what AreTomo makes of the relative path WarpTools hands it, links resolved."""
+    stage = os.path.join(os.path.realpath(job_dir), ".staging", f"task_{ts_name}")
+    return os.path.join(stage, "warp_tiltseries", "tiltstack", name, f"{name}.st")
+
+
+def staged_ts_name(ts_name: str, method: AlignmentMethod, job_dir: Path) -> str:
     """The name `ts_name` runs under inside its staging dir: the alias when AreTomo would
-    fail on the real name, else the name itself."""
-    if method == AlignmentMethod.ARETOMO and len(ts_name) > ARETOMO_TS_NAME_MAX:
+    write a wrong `.tlt` for the real name, else the name itself."""
+    if method != AlignmentMethod.ARETOMO:
+        return ts_name
+    too_long = len(aretomo_stack_path(job_dir, ts_name, ts_name)) > ARETOMO_PATH_MAX
+    if too_long or len(ts_name) > ARETOMO_TS_NAME_MAX:
         return ARETOMO_ALIAS
     return ts_name
 
@@ -327,7 +344,15 @@ class TsAlignmentDriver(ArrayDriver):
             ctx.job_dir, item, input_processing=None, settings_file=local_settings
         )
         stage_root = staged_settings.parent
-        name = staged_ts_name(item, ctx.params.alignment_method)
+        name = staged_ts_name(item, ctx.params.alignment_method, ctx.job_dir)
+        if ctx.params.alignment_method == AlignmentMethod.ARETOMO:
+            stack = aretomo_stack_path(ctx.job_dir, item, name)
+            if len(stack) > ARETOMO_PATH_MAX:
+                raise RuntimeError(
+                    f"Cannot align '{item}' with AreTomo: its stack's path is {len(stack)} characters even under "
+                    f"the short name '{name}', and AreTomo takes {ARETOMO_PATH_MAX} ({stack}). A project at a "
+                    f"shorter path aligns it."
+                )
         if name != item:
             # WarpTools names everything after the tomostar, so the staged tomostar takes the
             # alias. It also reads an existing XML back as the series' previous metadata, so
@@ -337,7 +362,11 @@ class TsAlignmentDriver(ArrayDriver):
             (staged_processing / f"{name}.xml").unlink(missing_ok=True)
             if (staged_processing / "tiltstack" / name).exists():
                 shutil.rmtree(staged_processing / "tiltstack" / name)
-            self.log(f"{len(item)}-character name is over AreTomo's {ARETOMO_TS_NAME_MAX}: runs as '{name}'")
+            full = len(aretomo_stack_path(ctx.job_dir, item, item))
+            self.log(
+                f"Runs as '{name}': AreTomo takes a {ARETOMO_TS_NAME_MAX}-character name and a "
+                f"{ARETOMO_PATH_MAX}-character stack path, and this series has {len(item)} and {full}"
+            )
         self.log(f"Staged at: {stage_root}")
         return stage_root
 
@@ -352,7 +381,7 @@ class TsAlignmentDriver(ArrayDriver):
         # exits 0 and still writes {ts}.xml even when AreTomo fails to align
         # this tilt-series, so the XML is not a success signal — check the
         # alignment matrices. In the staging dir the series may run under the alias.
-        name = staged_ts_name(item, ctx.params.alignment_method)
+        name = staged_ts_name(item, ctx.params.alignment_method, ctx.job_dir)
         staged_warp = staged / "warp_tiltseries"
         staged_xml = staged_warp / f"{name}.xml"
         if not staged_xml.exists():
@@ -370,7 +399,7 @@ class TsAlignmentDriver(ArrayDriver):
             )
 
     def collect(self, ctx: DriverContext[TsAlignmentParams], item: str, staged) -> None:
-        collect_per_ts_outputs(ctx.job_dir, item, staged_ts_name(item, ctx.params.alignment_method))
+        collect_per_ts_outputs(ctx.job_dir, item, staged_ts_name(item, ctx.params.alignment_method, ctx.job_dir))
 
 
 if __name__ == "__main__":
