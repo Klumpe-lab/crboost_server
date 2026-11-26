@@ -38,24 +38,37 @@ def render_m_refine_params(job_type, job_model, is_frozen, save_handler, *, ui_m
     return render_default_params_card(job_type, job_model, is_frozen, on_save, ui_mgr=ui_mgr, before=note, **ctx)
 
 
+def _refine3d_resolution(raw: str | None) -> float | None:
+    model = Path(raw).parent / "run_model.star" if raw else None
+    if model is None or not model.is_file():
+        return None
+    general = starfile.read(model, always_dict=True).get("model_general")
+    value = general.get("rlnCurrentResolution") if isinstance(general, dict) else None
+    return float(value) if value else None
+
+
 def start_resolution(job_model) -> tuple[float | None, str]:
-    """The resolution the round's species starts at, and whose it is; (None, "") when not known yet. Disk only, for a
-    thread."""
+    """The finest resolution a species of the round starts at (M fits the CTF from every species finer than 'CTF
+    from'), and whose it is; (None, "") when not known yet. Disk only, for a thread."""
     paths = job_model.paths or {}
+    found: dict[str, float] = {}
     if job_model.continue_from_m:
         raw = paths.get("input_m")
         if not raw or not Path(raw).is_file():
             return None, ""
         record = json.loads(Path(raw).read_text())
-        value = record.get("resolution_after_ang")
-        return (float(value), f"M's after round {record.get('round')}") if value else (None, "")
-    raw = paths.get("input_half_map")
-    model = Path(raw).parent / "run_model.star" if raw else None
-    if model is None or not model.is_file():
+        species = record.get("all_species") or {record.get("species_name") or "": record}
+        for name, e in species.items():
+            if e.get("resolution_after_ang"):
+                found[f"{name}, M's after round {record.get('round')}".lstrip(", ")] = float(e["resolution_after_ang"])
+    if job_model.makes_species:
+        value = _refine3d_resolution(paths.get("input_half_map"))
+        if value:
+            found["the Refine 3D's" if job_model.first_round else "the new species' Refine 3D's"] = value
+    if not found:
         return None, ""
-    general = starfile.read(model, always_dict=True).get("model_general")
-    value = general.get("rlnCurrentResolution") if isinstance(general, dict) else None
-    return (float(value), "the Refine 3D's") if value else (None, "")
+    whose = min(found, key=found.__getitem__)
+    return found[whose], whose
 
 
 def _fill_note(slot, job_model) -> None:
@@ -65,13 +78,13 @@ def _fill_note(slot, job_model) -> None:
             return
         slot.clear()
         switches = job_model.ctf_switches()
-        if resolution is None or not switches or resolution <= job_model.ctf_minresolution:
+        if job_model.hand_back or resolution is None or not switches or resolution <= job_model.ctf_minresolution:
             return
         tooltip = (
-            f"M refines the CTF (defocus, Cs, phase, Zernike terms) only of a species finer than 'CTF from' "
-            f"({job_model.ctf_minresolution:g} Å), and says nothing when it skips it. This round starts at about "
-            f"{resolution:.2f} Å ({whose}), so its CTF switches would do nothing. Raise 'CTF from' above that to "
-            "refine the CTF."
+            f"M refines the CTF (defocus, Cs, phase, Zernike terms) only from species finer than 'CTF from' "
+            f"({job_model.ctf_minresolution:g} Å), and says nothing when it skips them. The finest species of this "
+            f"round starts at about {resolution:.2f} Å ({whose}), so its CTF switches would do nothing. Raise 'CTF "
+            "from' above that to refine the CTF."
         )
         with slot:
             with (
@@ -86,7 +99,7 @@ def _fill_note(slot, job_model) -> None:
                 ui.icon("warning", size="14px").classes("text-amber-600")
                 ui.label("CTF not refined").classes("text-[11px] font-semibold text-amber-800")
                 ui.label(
-                    f"the species starts at {resolution:.2f} Å, coarser than 'CTF from' "
+                    f"the finest species starts at {resolution:.2f} Å, coarser than 'CTF from' "
                     f"{job_model.ctf_minresolution:g} Å"
                 ).classes("text-[11px] text-amber-800")
 

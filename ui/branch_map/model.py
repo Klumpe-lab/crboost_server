@@ -840,6 +840,8 @@ def _identity(kind: str, jm) -> list[str]:
         ]
         if getattr(jm, "refine_volumewarp", ""):
             what.append(f"volume warp {jm.refine_volumewarp}")
+        if getattr(jm, "refine_tiltmovies", False):
+            what.append("tilt movies")
         ctf = [
             w
             for w, attr in (
@@ -855,7 +857,20 @@ def _identity(kind: str, jm) -> list[str]:
         ]
         if ctf:
             what.append(f"{' + '.join(ctf)} from {getattr(jm, 'ctf_minresolution', 0):g} Å")
+        if getattr(jm, "hand_back", False):
+            identity.append("hand back only · no round")
+            return identity
         start = "next round" if getattr(jm, "continue_from_m", False) else "first round"
+        if getattr(jm, "adds_species", False):
+            start += " + this species"
+        before = []
+        if getattr(jm, "changes_mask", False):
+            before.append("new mask")
+        if getattr(jm, "temporal_samples", 0) > 1:
+            before.append(f"{jm.temporal_samples} temporal samples")
+        if getattr(jm, "expand_symmetry", False):
+            before.append(f"expand {jm.expand_from.strip() or 'its symmetry'}")
+        what = before + what
         identity.append(f"{start} · {' · '.join(what) or 'nothing refined'} · {param_words(jm, 'iterations')} iter")
     return identity
 

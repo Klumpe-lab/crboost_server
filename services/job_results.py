@@ -1265,23 +1265,60 @@ def _m_refine(r, jm, job_dir, reg, iid, tasks, thumb_dir) -> None:
     def ang(v) -> str:
         return f"{v:.2f} Å" if isinstance(v, (int, float)) else "—"
 
+    every = rec.get("all_species") or {}
+    own = rec.get("job_species") or rec.get("species_name")
     r.tiles = [
         ("Round", f"R{rec.get('round')}"),
         ("M", ang(rec.get("resolution_after_ang"))),
-        ("Particles", str(rec.get("particles"))),
+        ("Particles", f"{rec.get('particles'):,}" if isinstance(rec.get("particles"), int) else "—"),
         ("Box", f"{rec.get('m_box')} → {rec.get('box')} px"),
     ]
-    r.headline = (
-        f"M's own resolution {ang(rec.get('resolution_before_ang'))} → {ang(rec.get('resolution_after_ang'))} · "
-        f"{rec.get('tilt_series')} tilt series in {rec.get('sources')} sources · {rec.get('seconds', 0) / 60:.0f} min "
-        f"on {rec.get('gpus')} GPU"
-    )
+    if len(every) > 1:
+        r.tiles.append(("Species", str(len(every))))
+    if rec.get("hand_back_of"):
+        r.headline = (
+            f"{own} handed back as round {rec.get('round')} left it, M at {ang(rec.get('resolution_after_ang'))} · "
+            f"no M round ran ({Path(rec['hand_back_of']).name})"
+        )
+    else:
+        r.headline = (
+            f"M's own resolution {ang(rec.get('resolution_before_ang'))} → {ang(rec.get('resolution_after_ang'))} · "
+            f"{rec.get('tilt_series')} tilt series in {rec.get('sources')} sources · "
+            f"{rec.get('seconds', 0) / 60:.0f} min on {rec.get('gpus')} GPU"
+        )
     r.notes.append("the half maps are in the Refine 3D's box: a PostProcess reads them in the trunk's masks")
+    if len(every) > 1:
+        for name in sorted(every, key=lambda n: (n != own, n)):
+            e = every[name]
+            count = e.get("particles")
+            added = " · added this round" if e.get("added_round") == rec.get("round") and rec.get("round") else ""
+            where = "this job's outputs" if name == own else f"species/{name}/"
+            r.notes.append(
+                f"{name}: {count:,} particles, M {ang(e.get('resolution_before_ang'))} → "
+                f"{ang(e.get('resolution_after_ang'))}{added} ({where})"
+                if isinstance(count, int)
+                else f"{name}: M {ang(e.get('resolution_after_ang'))} ({where})"
+            )
+    for x in rec.get("expansions") or []:
+        r.notes.append(
+            f"{x.get('from')} expanded in round {x.get('round')}: {x.get('parents', 0):,} particles → "
+            f"{x.get('copies', 0):,} copies ({x.get('per_parent')} each), the species now {x.get('to')}; each copy "
+            "names its parent (cbParentUid, cbSubIndex)"
+        )
+    if (rec.get("temporal_samples") or 1) > 1:
+        r.notes.append(
+            f"M holds {rec['temporal_samples']} temporal samples of each particle's pose; the set carries their mean"
+        )
     gate = rec.get("ctf_gate") or {}
     if gate.get("skipped"):
         r.warn.append(
             f"the CTF was not refined: M's species was at {ang(gate.get('species_resolution_ang'))}, coarser than "
             f"'CTF from' {gate.get('min_resolution_ang'):g} Å ({', '.join(gate.get('switches') or [])} did nothing)"
+        )
+    elif gate.get("not_fitted"):
+        r.notes.append(
+            f"the CTF was fitted from {', '.join(gate.get('fitted_on') or [])}; {', '.join(gate['not_fitted'])} "
+            f"coarser than 'CTF from' {gate.get('min_resolution_ang'):g} Å took no part"
         )
     beyond = rec.get("beyond_star") or {}
     staged, mag = beyond.get("stage_angles") or {}, beyond.get("magnification") or {}
@@ -1316,8 +1353,8 @@ def _m_refine(r, jm, job_dir, reg, iid, tasks, thumb_dir) -> None:
                 f"{s['stage_angle_max_deg']:.2f}" if s.get("stage_angle_max_deg") else "—",
                 f"{scale['x_pct']:+.2f} / {scale['y_pct']:+.2f}" if has_mag else "—",
                 f"{s['cs_after_mm']:.2f}" if cs_moved else "—",
-                f"{s['moved_rms_ang']:.1f}",
-                f"{s['turned_rms_deg']:.2f}",
+                f"{s['moved_rms_ang']:.1f}" if s.get("moved_rms_ang") is not None else "—",
+                f"{s['turned_rms_deg']:.2f}" if s.get("turned_rms_deg") is not None else "—",
             ]
         )
     if rows:

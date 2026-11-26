@@ -104,8 +104,9 @@ def job_drift(sp, jm) -> list[tuple[str, str]]:
                 tube = float(getattr(jm, "helical_outer_diameter", 0.0) or 0.0)
                 if helix and filament and sp.diameter_ang and abs(tube - float(sp.diameter_ang)) > 1e-6:
                     out.append(("tube Ø", f"job {tube:g} Å ≠ species {sp.diameter_ang:g} Å"))
-        case JobType.M_REFINE if not getattr(jm, "continue_from_m", False):
-            # A follow-up round keeps its parent's species; only a first round takes these.
+        case JobType.M_REFINE if getattr(jm, "makes_species", False):
+            # A follow-up round keeps its parent's species; only a job that makes one (a first round, or a species
+            # added to a population) takes these.
             job_sym = _sym(getattr(jm, "symmetry", None))
             if job_sym != species_sym:
                 out.append(("symmetry", f"job {job_sym} ≠ species {species_sym}"))

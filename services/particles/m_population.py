@@ -29,10 +29,17 @@ the halves checked, and no images: the stacks were cut with another model. Its t
 refined; each names its source copy's per-tilt star and carries the XML's Cs, voltage and amplitude contrast. A set
 that records origins names that star as the origin's, so Warp Export and the bridge find M's XML beside it. The set
 carries no geometry marker and no trajectories: the bridge computes its offsets from M's XMLs.
+
+**Several species.** A population holds any number; each has its own particles, map and mask, and every round
+refines the tilt series' model from all of them. A species whose particles M holds in several temporal samples hands
+RELION one pose a particle, the mean of its samples. A species whose symmetry M expanded holds one row per copy;
+`label_copies` names each copy after its parent (`<name>_<k>`, cbParentName, cbParentUid, cbSubIndex, a new
+cbPickUid), so the set back holds every copy, the parent's row under each.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -49,6 +56,8 @@ import starfile
 from services.configs.metadata_service import WarpXmlParser
 from services.particles import warp_geometry as wg
 from services.particles.coords import CENTERED_COLS
+from services.particles.pick_uids import parse_cell, uid_cell
+from services.particles.poses import euler_angles
 from services.particles.set_origins import ORIGIN_TILT_STAR, origins_of, project_of, tilt_block, write_renamed_tilt_star
 from services.particles.warp_export import (
     ANGLE_COLS,
@@ -95,6 +104,11 @@ NAME = "rlnTomoParticleName"
 SUBSET = "rlnRandomSubset"
 NAME_COL = "cbTomoParticleName"  # carried through M: the key of the set back
 UID_COL = "cbPickUid"
+# An expanded species' copies (label_copies), carried through M like the name; as subparticles.py names them.
+PARENT_NAME_COL = "cbParentName"
+PARENT_UID_COL = "cbParentUid"
+INDEX_COL = "cbSubIndex"
+ASSEMBLY_COL = "cbAssembly"
 LEGACY_COORDS = ["rlnCoordinateX", "rlnCoordinateY", "rlnCoordinateZ"]
 M_POS = [f"wrpCoordinate{a}1" for a in "XYZ"]
 M_ANGLES = [f"wrpAngle{a}1" for a in ("Rot", "Tilt", "Psi")]
@@ -302,9 +316,23 @@ def _source_record(plan: SourcePlan, folder: Path) -> dict:
     return record
 
 
-def write_sources(plans: list[SourcePlan], m_dir: Path) -> dict:
-    """The source folders under `m_dir/sources/`, and their record (`m_dir/sources.json`), which it returns."""
-    sources = {}
+def rename_apart(plans: list[SourcePlan], taken: set[str]) -> None:
+    """Rename the plans whose names a population's sources already take (`<name>_2`, …), in place."""
+    taken = set(taken)
+    for p in plans:
+        base, n = p.name, 2
+        while p.name in taken:
+            p.name, n = f"{base}_{n}", n + 1
+        taken.add(p.name)
+
+
+def write_sources(plans: list[SourcePlan], m_dir: Path, existing: dict | None = None) -> dict:
+    """The source folders under `m_dir/sources/`, and their record (`m_dir/sources.json`, with `existing`'s sources
+    before them when given), which it returns."""
+    sources = dict((existing or {}).get("sources", {}))
+    clash = sorted({p.name for p in plans} & set(sources))
+    if clash:
+        raise ValueError(f"The population has sources named {clash} already")
     for plan in plans:
         d = m_dir / SOURCES_DIR / plan.name
         (d / TOMOSTAR_DIR).mkdir(parents=True)
@@ -337,32 +365,52 @@ def source_volume(source: dict) -> WarpVolume:
 # ── a follow-up round's copy
 
 
-def species_file(population: Path) -> Path:
-    """The one species of an M population."""
-    found = [s.get("Path") for s in ET.parse(population).getroot().iter("Species") if s.get("Path")]
-    if len(found) != 1:
-        raise ValueError(f"{population} names {len(found)} species; an M refine works with one")
-    return (population.parent / found[0]).resolve()
-
-
 def species_params(path: Path) -> dict[str, str]:
     return {p.get("Name"): p.get("Value") or "" for p in ET.parse(path).getroot().findall("Param")}
 
 
+def species_files(population: Path) -> dict[str, Path]:
+    """Every species of an M population, by its name (the species file's Name, else the file's stem)."""
+    out: dict[str, Path] = {}
+    for s in ET.parse(population).getroot().iter("Species"):
+        rel = s.get("Path")
+        if not rel:
+            continue
+        path = (population.parent / rel).resolve()
+        name = species_params(path).get("Name") or path.stem
+        if name in out:
+            raise ValueError(f"{population} names two species {name!r}")
+        out[name] = path
+    if not out:
+        raise ValueError(f"{population} names no species")
+    return out
+
+
+def temporal_samples(species: Path) -> int:
+    """How many samples M holds of each particle's pose along the exposure."""
+    p = species_params(species)
+    return max(int(p.get("TemporalResolutionMovement") or 1), int(p.get("TemporalResolutionRotation") or 1))
+
+
+def particles_star(species: Path) -> Path:
+    """The species' particle star, which M reads and writes beside the species file."""
+    return species.parent / f"{species_params(species).get('Name') or species.stem}_particles.star"
+
+
 def copy_round(parent_dir: Path, job_dir: Path) -> dict:
-    """An earlier round's population, species (its files as they are now) and sources (the settings' folders and the
-    XMLs' DataDirectory pointed into this job) under `job_dir/m/`; returns the sources' record, whose `xml_before`
-    names the parent's XMLs. Nothing of the parent is changed."""
+    """An earlier round's population, every species (its files as they are now) and sources (the settings' folders
+    and the XMLs' DataDirectory pointed into this job) under `job_dir/m/`; returns the sources' record, whose
+    `xml_before` names the parent's XMLs. Nothing of the parent is changed."""
     src_m, dst_m = parent_dir / M_DIR, job_dir / M_DIR
     population = population_path(parent_dir)
-    species = species_file(population)
     dst_m.mkdir(parents=True)
     shutil.copy2(population, dst_m / population.name)
-    species_dst = dst_m / species.parent.relative_to(src_m.resolve())
-    species_dst.mkdir(parents=True)
-    for f in species.parent.iterdir():
-        if f.is_file():
-            shutil.copy2(f, species_dst / f.name)
+    for species in species_files(population).values():
+        species_dst = dst_m / species.parent.relative_to(src_m.resolve())
+        species_dst.mkdir(parents=True)
+        for f in species.parent.iterdir():
+            if f.is_file():
+                shutil.copy2(f, species_dst / f.name)
     parent = json.loads((src_m / SOURCES_RECORD).read_text())
     sources = {}
     for name, rec in parent["sources"].items():
@@ -525,6 +573,129 @@ def read_plain_star(path: Path) -> pd.DataFrame:
     raise ValueError(f"{path} holds no table")
 
 
+def _hash12(text: str) -> str:
+    return hashlib.sha1(text.encode()).hexdigest()[:12]
+
+
+def label_copies(star: Path, tag: str) -> dict:
+    """Name the copies an expansion made (MTools expand_symmetry writes each particle's copies one after another,
+    each with its parent's columns): `<parent>_<k>` in the order M wrote them, the parent's name and uid beside, the
+    copy's index, a uid of its own (from the parent's, `tag` and k). Rewrites M's particle star; returns the counts."""
+    df = read_plain_star(star)
+    if NAME_COL not in df.columns:
+        raise ValueError(f"{star} has no {NAME_COL}: the copies cannot be traced to their particles")
+    names = df[NAME_COL].astype(str)
+    per = names.value_counts()
+    if per.min() < 2:
+        raise ValueError(f"The expansion left {int((per < 2).sum())} particles with no copy: nothing was expanded")
+    if per.nunique() != 1:
+        raise ValueError(f"The expansion made {sorted(per.unique())} copies of different particles: one count expected")
+    k = df.groupby(names, sort=False).cumcount()
+    df[PARENT_NAME_COL] = names.to_numpy()
+    if UID_COL in df.columns:
+        parents = [parse_cell(v) or _hash12(f"parent|{n}") for v, n in zip(df[UID_COL], names, strict=True)]
+    else:
+        parents = [_hash12(f"parent|{n}") for n in names]
+    df[PARENT_UID_COL] = [uid_cell(p) for p in parents]
+    df[ASSEMBLY_COL] = df[PARENT_UID_COL]
+    df[INDEX_COL] = k.to_numpy()
+    df[UID_COL] = [uid_cell(_hash12(f"m_expand|{p}|{tag}|{i}")) for p, i in zip(parents, k, strict=True)]
+    df[NAME_COL] = (names + "_" + k.astype(str)).to_numpy()
+    write_plain_star(df, star)
+    return {"parents": len(per), "copies": len(df), "per_parent": int(per.iloc[0])}
+
+
+def m_samples(df: pd.DataFrame) -> int:
+    """How many temporal samples M's particle star holds (wrpCoordinateX1, X2, …)."""
+    n = 0
+    while f"wrpCoordinateX{n + 1}" in df.columns:
+        n += 1
+    if n == 0:
+        raise ValueError(f"M's particle star has no {M_POS[0]}")
+    return n
+
+
+def m_pose(df: pd.DataFrame) -> tuple[np.ndarray, np.ndarray]:
+    """Each particle's position (Å from the volume's corner) and orientation (RELION's 3 × 3) in M's particle star;
+    with several temporal samples, their mean: the positions averaged, the rotations' mean projected back onto a
+    rotation (chordal L2 mean)."""
+    n = m_samples(df)
+    pos = np.mean([df[[f"wrpCoordinate{a}{t}" for a in "XYZ"]].to_numpy(float) for t in range(1, n + 1)], axis=0)
+    mats = np.mean(
+        [
+            euler_matrices(df[[f"wrpAngle{a}{t}" for a in ("Rot", "Tilt", "Psi")]].to_numpy(float))
+            for t in range(1, n + 1)
+        ],
+        axis=0,
+    )
+    if n > 1:
+        u, _, vt = np.linalg.svd(mats)
+        fix = np.ones((len(mats), 3))
+        fix[:, 2] = np.sign(np.linalg.det(u @ vt))
+        mats = (u * fix[:, None, :]) @ vt
+    return pos, mats
+
+
+def angles_of(mats: np.ndarray) -> np.ndarray:
+    """RELION's (rot, tilt, psi) in degrees of each 3 × 3, as (n, 3)."""
+    return np.stack(euler_angles(mats), axis=1)
+
+
+def m_moves(before: pd.DataFrame, after: pd.DataFrame, manifest: dict) -> dict[str, dict]:
+    """How far a round moved and turned a species' particles, per tilt series (by its name in the set): M's particle
+    star before the round against after it, matched by name."""
+    b = before.set_index(before[NAME_COL].astype(str))
+    a = after.set_index(after[NAME_COL].astype(str))
+    if set(b.index) != set(a.index):
+        raise ValueError(f"M's particles before and after the round differ: {len(set(b.index) ^ set(a.index))} names")
+    a = a.loc[b.index]
+    (pb, mb), (pa, ma) = m_pose(b), m_pose(a)
+    moved = np.linalg.norm(pa - pb, axis=1)
+    rel = ma @ np.transpose(mb, (0, 2, 1))
+    turned = np.degrees(np.arccos(np.clip((np.trace(rel, axis1=1, axis2=2) - 1) / 2, -1.0, 1.0)))
+    by_item = {s["item"]: name for name, (_src, s) in series_index(manifest).items()}
+    series = b[M_SOURCE].astype(str).map(by_item)
+    if series.isna().any():
+        raise ValueError(f"M's particles name tilt series no source has: {sorted(set(b[M_SOURCE][series.isna()]))[:5]}")
+    return {
+        t: {
+            "particles": int(sel.sum()),
+            "moved_rms_ang": float(np.sqrt((moved[sel] ** 2).mean())),
+            "moved_max_ang": float(moved[sel].max()),
+            "turned_rms_deg": float(np.sqrt((turned[sel] ** 2).mean())),
+            "turned_max_deg": float(turned[sel].max()),
+        }
+        for t in sorted(set(series))
+        for sel in [(series == t).to_numpy()]
+    }
+
+
+def expand_base(base: pd.DataFrame, m: pd.DataFrame) -> pd.DataFrame:
+    """The set's rows for an expanded species: each copy in M's star (`label_copies`) gets its parent's row, named
+    and traced as the copy. Rows of the set that M holds as they are stay as they are."""
+    names = base[NAME].astype(str)
+    own = m[NAME_COL].astype(str).isin(set(names)).to_numpy()
+    if own.all():
+        return base
+    if PARENT_NAME_COL not in m.columns:
+        raise ValueError(f"M's particle star names {int((~own).sum())} particles the set does not hold")
+    copies = m[~own]
+    parent = copies[PARENT_NAME_COL].astype(str)
+    unknown = sorted(set(parent) - set(names))
+    if unknown:
+        raise ValueError(f"{len(unknown)} copies in M's particle star have no parent in the set: {unknown[:3]}")
+    by_name = base.set_index(names, drop=False)
+    rows = by_name.loc[parent.tolist()].reset_index(drop=True)
+    rows[NAME] = copies[NAME_COL].astype(str).to_numpy()
+    for col in (UID_COL, PARENT_UID_COL, ASSEMBLY_COL, INDEX_COL):
+        if col in copies.columns:
+            rows[col] = copies[col].to_numpy()
+    expanded = set(parent)
+    if m.loc[own, NAME_COL].astype(str).isin(expanded).any():
+        raise ValueError("M holds a particle both as it is and as copies")
+    return pd.concat([base[~names.isin(expanded)], rows], ignore_index=True)
+
+
 # ── the set M hands back
 
 
@@ -585,23 +756,36 @@ def tilt_star_with_m_ctf(src: Path, src_block: str, xml: Path, dst: Path, dst_bl
 
 
 def relion_set_from_m(
-    m_particles: pd.DataFrame, base_particles_star: Path, base_tomograms_star: Path, manifest: dict, out_dir: Path
+    m_particles: pd.DataFrame,
+    base_particles_star: Path,
+    base_tomograms_star: Path,
+    manifest: dict,
+    out_dir: Path,
+    *,
+    subset_ok: bool = False,
 ) -> dict:
     """M's particles as a RELION 5 set in `out_dir` (particles.star, tomograms.star, optimisation_set.star), the
-    rows of the set that went in keyed by cbTomoParticleName. Returns, per tilt series, how far M moved and turned its
-    particles."""
+    rows of the set that went in keyed by cbTomoParticleName; an expanded species' copies each under their parent's
+    row (`expand_base`); several temporal samples as their mean pose (`m_pose`). `subset_ok`: the set may hold
+    particles M was not given (a species added on the population's tilt series only); they are left out. Returns
+    the counts."""
     need = [*M_POS, *M_ANGLES, M_SUBSET, M_SOURCE, NAME_COL]
     missing = [c for c in need if c not in m_particles.columns]
     if missing:
         raise ValueError(f"M's particle star has no {missing}")
-    if "wrpCoordinateX2" in m_particles.columns:
-        raise ValueError("M's particles hold several temporal samples; a RELION set holds one position per particle")
     base, optics, general = _read_input_particles_lenient(base_particles_star)
+    base = expand_base(base, m_particles)
     index = series_index(manifest)
     m = m_particles.set_index(m_particles[NAME_COL].astype(str))
     if m.index.duplicated().any():
         raise ValueError("M's particle star names a particle twice")
     names = base[NAME].astype(str)
+    left_out = 0
+    if subset_ok:
+        given = names.isin(set(m.index)).to_numpy()
+        left_out = int((~given).sum())
+        base = base[given].reset_index(drop=True)
+        names = base[NAME].astype(str)
     if set(names) != set(m.index):
         raise ValueError(
             f"M hands back {len(m)} particles and {len(base)} went in; {len(set(names) ^ set(m.index))} names "
@@ -621,31 +805,14 @@ def relion_set_from_m(
             raise ValueError(f"M hands back particles whose {UID_COL} is not the one they went in with")
 
     centre = np.stack([source_volume(index[t][0]).centre_angst for t in series])
-    before = base[CENTERED_COLS].to_numpy(dtype=float)
-    if all(c in base.columns for c in ORIGIN_ANGST_COLS):
-        before = before - base[ORIGIN_ANGST_COLS].to_numpy(dtype=float)
-    after = rows[M_POS].to_numpy(dtype=float) - centre
+    pos, mats = m_pose(rows)
     out = base.copy()
-    out[CENTERED_COLS] = after
-    out[ANGLE_COLS] = rows[M_ANGLES].to_numpy(dtype=float)
+    out[CENTERED_COLS] = pos - centre
+    out[ANGLE_COLS] = angles_of(mats) if m_samples(rows) > 1 else rows[M_ANGLES].to_numpy(dtype=float)
     for c in ORIGIN_ANGST_COLS:
         if c in out.columns:
             out[c] = 0.0
     out = out.drop(columns=[c for c in ("rlnImageName", *LEGACY_COORDS) if c in out.columns])
-
-    moved = np.linalg.norm(after - before, axis=1)
-    turned = rotation_between(base[ANGLE_COLS].to_numpy(float), rows[M_ANGLES].to_numpy(float))
-    per_series = {
-        t: {
-            "particles": int(sel.sum()),
-            "moved_rms_ang": float(np.sqrt((moved[sel] ** 2).mean())),
-            "moved_max_ang": float(moved[sel].max()),
-            "turned_rms_deg": float(np.sqrt((turned[sel] ** 2).mean())),
-            "turned_max_deg": float(turned[sel].max()),
-        }
-        for t in sorted(set(series))
-        for sel in [(series == t).to_numpy()]
-    }
 
     tomograms = _read_tomograms_star(base_tomograms_star)
     tomograms = tomograms[tomograms[TOMO].astype(str).isin(set(series))].copy().reset_index(drop=True)
@@ -685,7 +852,7 @@ def relion_set_from_m(
     write_optimisation_set(
         out_dir / "optimisation_set.star", particles_star=particles_star, tomograms_star=tomograms_star
     )
-    return per_series
+    return {"particles": len(out), "left_out": left_out, "tilt_series": int(series.nunique())}
 
 
 # ── what a round changed
