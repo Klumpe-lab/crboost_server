@@ -2,6 +2,7 @@
 Main UI router.
 """
 
+import asyncio
 import logging
 import time
 from dataclasses import replace
@@ -23,6 +24,7 @@ from ui.routing import RouteWriter, apply_route
 from ui.ui_state import get_ui_state_manager
 from ui.agent_plan_page import render_agent_plan_page
 from ui.napari_open_page import render_napari_open_page
+from ui.glyph_ideas import load_renders, render_glyph_ideas
 from ui.theme_ideas import render_theme_ideas
 from ui.components.buttons import house_button
 from ui.data_import_panel import build_data_import_panel
@@ -233,6 +235,13 @@ def create_ui_router(backend: CryoBoostBackend):
         await client.connected()
         ensure_assets_loaded()
         render_theme_ideas()
+
+    # Ideas for the species glyphs at the sizes the app draws them (ui/glyph_ideas.py, roadmap 77).
+    @ui.page("/dev/glyphs", title="Glyph ideas")
+    async def glyph_ideas_page(client: Client):
+        await client.connected()
+        ensure_assets_loaded()
+        render_glyph_ideas(await asyncio.to_thread(load_renders))
 
     @ui.page("/cluster-info")
     async def cluster_info_page(client: Client):
