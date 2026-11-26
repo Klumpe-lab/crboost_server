@@ -69,7 +69,7 @@ def _deep_diff(base: dict, new: dict) -> dict:
 
 def check_path_exists(path: str | None) -> bool:
     """True if a tool path resolves. Absolute paths are stat'd; a bare command
-    name (e.g. ``pymol``) is looked up on PATH."""
+    name (e.g. ``simulate``) is looked up on PATH."""
     if not path or not str(path).strip():
         return False
     p = Path(path)

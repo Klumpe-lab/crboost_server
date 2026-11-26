@@ -25,11 +25,9 @@ class TsAlignmentParams(AbstractJobParams):
         "patch_y",
         "axis_iter",
         "axis_batch",
-        "imod_patch_size",
-        "imod_overlap",
         "array_throttle",
     }
-    PARAM_GROUPS: ClassVar[tuple[str, ...]] = ("Alignment", "AreTomo", "IMOD", "Processing")
+    PARAM_GROUPS: ClassVar[tuple[str, ...]] = ("Alignment", "AreTomo", "Processing")
 
     INPUT_SCHEMA: ClassVar[list[InputSlot]] = [
         InputSlot(key="input_star", accepts=[JobFileType.FS_MOTION_CTF_STAR], preferred_source="fsMotionAndCtf"),
@@ -77,8 +75,6 @@ class TsAlignmentParams(AbstractJobParams):
     patch_y: int = Field(default=0, ge=0, title="Patches Y", json_schema_extra=form("AreTomo", S))
     axis_iter: int = Field(default=0, ge=0, title="Axis iterations", json_schema_extra=form("AreTomo", S))
     axis_batch: int = Field(default=0, ge=0, title="Axis batch", json_schema_extra=form("AreTomo", S))
-    imod_patch_size: int = Field(default=200, title="Patch size", json_schema_extra=form("IMOD", S, "px"))
-    imod_overlap: int = Field(default=50, title="Patch overlap", json_schema_extra=form("IMOD", S))
     array_throttle: int = Field(
         default=40, ge=1, le=64, description="Max concurrent SLURM array tasks for per-tilt-series alignment"
     )

@@ -319,11 +319,10 @@ class TsAlignmentIngestAdapter(BaseIngestAdapter):
                 f"likely a cross-TS contamination of the staging dir"
             )
 
-        method_literal: str = "aretomo" if alignment_method == AlignmentMethod.ARETOMO else "imod"
         return TsAlignmentTiltSeriesOutput(
             job_instance_id=self.job_instance_id,
             job_dir=self.job_dir,
-            alignment_method=method_literal,  # type: ignore[arg-type]
+            alignment_method="aretomo",  # the only method _parse_alignment_files reads
             alignment_angpix=shift_angpix,
             aln_file=aln_file,
             xf_file=xf_file,
@@ -371,15 +370,6 @@ class TsAlignmentIngestAdapter(BaseIngestAdapter):
                 return None, None, None, None
             return self._read_aretomo_aln(aln_files[0]), aln_files[0], None, None
 
-        if alignment_method == AlignmentMethod.IMOD:
-            xf_files = sorted(ts_tiltstack.glob("*.xf"))
-            tlt_files = sorted(ts_tiltstack.glob("*.tlt"))
-            if len(xf_files) > 1 or len(tlt_files) > 1:
-                raise RuntimeError(f"expected 1 .xf and 1 .tlt, found {len(xf_files)} .xf / {len(tlt_files)} .tlt")
-            if not xf_files or not tlt_files:
-                return None, None, None, None
-            return (self._read_imod_xf_tlt(xf_files[0], tlt_files[0]), None, xf_files[0], tlt_files[0])
-
         raise RuntimeError(f"alignment method {alignment_method} not implemented")
 
     @staticmethod
@@ -399,31 +389,6 @@ class TsAlignmentIngestAdapter(BaseIngestAdapter):
         if not data:
             return None
         return np.array(data)
-
-    @staticmethod
-    def _read_imod_xf_tlt(xf_file: Path, tlt_file: Path) -> np.ndarray | None:
-        df1 = pd.read_csv(xf_file, delim_whitespace=True, header=None, names=["m1", "m2", "m3", "m4", "tx", "ty"])
-        df2 = pd.read_csv(tlt_file, delim_whitespace=True, header=None, names=["tilt_angle"])
-        combined = pd.concat([df1, df2], axis=1)
-
-        results_x, results_y, tilt_ang = [], [], []
-        for _, row in combined.iterrows():
-            M = np.array([[row["m1"], row["m2"]], [row["m3"], row["m4"]]])
-            M = np.linalg.inv(M)
-            v = np.array([row["tx"], row["ty"]]) * -1
-            result = np.dot(M, v)
-            angle = np.degrees(np.arctan2(M[1, 0], M[0, 0]))
-            results_x.append(result[0])
-            results_y.append(result[1])
-            tilt_ang.append(angle)
-
-        data_np = np.zeros((len(combined), 10))
-        data_np[:, _ALN_COL_INDEX] = np.arange(0, len(combined))
-        data_np[:, _ALN_COL_ZROT] = tilt_ang
-        data_np[:, _ALN_COL_XSHIFT] = results_x
-        data_np[:, _ALN_COL_YSHIFT] = results_y
-        data_np[:, _ALN_COL_TILT] = combined["tilt_angle"]
-        return data_np
 
     def _infer_alignment_angpix(self) -> float:
         """Read the pixel size of the binned tilt stack from the first .st

@@ -1,11 +1,11 @@
 """
-Visualization utilities for candidate extraction results using IMOD.
+Visualization utilities for candidate extraction results, for IMOD's 3dmod.
 
-Generates IMOD models (.mod) for particle visualization and Warp-compatible
+Writes IMOD models (.mod) for particle visualization, in IMOD's binary format and without IMOD, and Warp-compatible
 coordinate files from RELION5/pytom candidate star files.
 
 Usage:
-    from services.visualization.imod_vis import generate_candidate_vis, view_volume
+    from services.visualization.imod_vis import generate_candidate_vis
 
     generate_candidate_vis(
         candidates_star=Path("External/job012/candidates.star"),
@@ -16,13 +16,11 @@ Usage:
 """
 
 import logging
-import subprocess
-import os
+import struct
 import numpy as np
 import starfile
 import pandas as pd
 from pathlib import Path
-from collections.abc import Callable
 
 from services.particles.coords import binned_tomo_size_from_tomo_row, centered_angst_to_voxel, pixel_size_from_tomo_row
 
@@ -78,35 +76,81 @@ def _get_imod_coords(particles: pd.DataFrame, tomo_size: np.ndarray, pixel_size:
         )
 
 
-def _default_command_runner(cmd: str, cwd: Path) -> None:
-    """Run a shell command directly (assumes tools are on PATH)."""
-    result = subprocess.run(cmd, shell=True, capture_output=True, text=True, cwd=cwd)
-    if result.returncode != 0:
-        raise RuntimeError(f"Command failed (rc={result.returncode}): {result.stderr.strip()}")
+# IMOD's binary model format (IMOD's binspec), as `point2model -sphere R -scat -color r,g,b -thick T` writes it:
+# big-endian, one object holding one contour of scattered points. Checked byte for byte against IMOD 5.1.3's
+# point2model (roadmap 63 §7); only the name field differs past its NUL, where point2model leaves stray memory.
+_MODEL_NAME = b"IMOD-NewModel"
+_MODEL_FLAGS = 0x3E00  # point2model's model flags
+_OBJECT_FLAGS = 0x18000208  # open, scattered, as point2model sets them for -scat
+_CONTOUR_FLAGS = 16
+_MATERIAL = bytes([102, 255, 127, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 255, 0, 0])  # IMAT: IMOD's default material
 
 
-def _write_imod_model(
-    coords: np.ndarray,
-    output_txt: Path,
-    output_mod: Path,
-    radius_px: int,
-    command_runner: Callable[[str, Path], None],
-    color: tuple[int, int, int] = (0, 255, 0),
-    thickness: int = 2,
+def write_point_model(
+    path: Path, coords: np.ndarray, radius_px: int, color: tuple[int, int, int], thickness: int
 ) -> None:
-    output_txt.parent.mkdir(parents=True, exist_ok=True)
-    np.savetxt(str(output_txt), coords, delimiter="\t", fmt="%.0f")
-
-    cmd = (
-        f"point2model {output_txt} {output_mod} "
-        f"-sphere {radius_px} -scat "
-        f"-color {color[0]},{color[1]},{color[2]} -thick {thickness}"
+    """Write `coords` (voxels, one row per point) as an IMOD model of scattered points drawn as spheres of
+    `radius_px`, in `color` (0-255), with lines `thickness` wide."""
+    points = np.asarray(coords).reshape(-1, 3)
+    if not len(points):
+        raise ValueError(f"no points for {path.name}")
+    top = points.max(axis=0)
+    # As point2model sizes a model made without an image: 10 past the last point in X and Y, 1 in Z.
+    size = (int(top[0]) + 10, int(top[1]) + 10, int(top[2]) + 1)
+    model = struct.pack(
+        ">3i i I 4i 3f 3f 5i f i i 3f",
+        *size,
+        1,  # objects
+        _MODEL_FLAGS,
+        1,  # drawmode
+        2,  # mousemode
+        0,  # black level
+        255,  # white level
+        *(0.0, 0.0, 0.0),  # offsets
+        *(1.0, 1.0, 1.0),  # scales
+        0,  # current object
+        0,  # current contour
+        -1,  # current point
+        3,  # resolution
+        128,  # threshold
+        1.0,  # pixel size
+        0,  # units: pixels
+        0,  # checksum
+        *(0.0, 0.0, 0.0),  # alpha, beta, gamma
     )
-    try:
-        command_runner(cmd, output_txt.parent)
-        logger.info("Created %s", output_mod)
-    except RuntimeError as e:
-        logger.warning("point2model failed for %s: %s", output_mod, e)
+    obj = struct.pack(
+        ">i I i i 3f i 8B i i",
+        1,  # contours
+        _OBJECT_FLAGS,
+        0,  # axis
+        1,  # drawmode
+        *(c / 255.0 for c in color),
+        int(radius_px),  # sphere radius, the -sphere value
+        1,  # symbol
+        3,  # symbol size
+        1,  # 2-D line width
+        int(thickness),  # 3-D line width, the -thick value
+        *(0, 0, 0, 0),  # line style, symbol flags, pad, transparency
+        0,  # meshes
+        0,  # surfaces
+    )
+    contour = struct.pack(">i I i i", len(points), _CONTOUR_FLAGS, 0, 0) + points.astype(">f4").tobytes()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(
+        b"IMODV1.2"
+        + _MODEL_NAME.ljust(128, b"\0")
+        + model
+        + b"OBJT"
+        + bytes(128)  # object name and its 16 spare words
+        + obj
+        + b"CONT"
+        + contour
+        + b"IMAT"
+        + struct.pack(">i", len(_MATERIAL))
+        + _MATERIAL
+        + b"IEOF"
+    )
+    logger.info("Created %s", path)
 
 
 def _write_warp_coords(
@@ -141,7 +185,6 @@ def generate_candidate_vis(
     tomograms_star: Path,
     particle_diameter_ang: float,
     output_dir: Path,
-    command_runner: Callable[[str, Path], None] | None = None,
     project_root: Path | None = None,
 ) -> None:
     """
@@ -157,13 +200,7 @@ def generate_candidate_vis(
         tomograms_star: Path to tomograms.star
         particle_diameter_ang: Particle diameter in Angstroms
         output_dir: Base output directory (typically the job dir)
-        command_runner: Callable(cmd_string, cwd) to execute shell commands.
-                        Defaults to bare subprocess.run. Pass a container-wrapped
-                        version for execution via apptainer.
     """
-    if command_runner is None:
-        command_runner = _default_command_runner
-
     candidates_star = Path(candidates_star)
     tomograms_star = Path(tomograms_star)
     output_dir = Path(output_dir)
@@ -191,49 +228,12 @@ def generate_candidate_vis(
 
         # Particle radius model (green spheres)
         radius_px = int(particle_diameter_ang / (2.0 * pixel_size))
-        _write_imod_model(
-            coords,
-            output_txt=dir_part_rad / f"coords_{tomo_name}.txt",
-            output_mod=dir_part_rad / f"coords_{tomo_name}.mod",
-            radius_px=radius_px,
-            command_runner=command_runner,
-            color=(0, 255, 0),
-            thickness=2,
-        )
+        write_point_model(dir_part_rad / f"coords_{tomo_name}.mod", coords, radius_px, (0, 255, 0), thickness=2)
 
         # Center marker model (red, small): 4 px radius, as in CryoBoost v1
-        _write_imod_model(
-            coords,
-            output_txt=dir_center / f"coords_{tomo_name}.txt",
-            output_mod=dir_center / f"coords_{tomo_name}.mod",
-            radius_px=4,
-            command_runner=command_runner,
-            color=(255, 0, 0),
-            thickness=4,
-        )
+        write_point_model(dir_center / f"coords_{tomo_name}.mod", coords, 4, (255, 0, 0), thickness=4)
 
         # Warp-compatible coordinates
         _write_warp_coords(tomo_particles, tomo_name, tomo_size, pixel_size, dir_warp)
 
     logger.info("Candidate visualization complete for %d tomogram(s)", len(tomo_names))
-
-
-def view_volume(mrc_path: str, command_runner: Callable[[str, Path], None] | None = None) -> None:
-    """
-    Launch 3dmod to view a volume.
-
-    Args:
-        mrc_path: Path to the MRC file
-        command_runner: Optional command runner (for container execution).
-                        If None, launches 3dmod directly via Popen (non-blocking).
-    """
-    mrc_path = str(mrc_path)
-    if not os.path.isfile(mrc_path):
-        raise FileNotFoundError(f"Volume not found: {mrc_path}")
-
-    if command_runner is not None:
-        # Container mode -- run 3dmod through container (blocking)
-        command_runner(f"3dmod {mrc_path}", Path(mrc_path).parent)
-    else:
-        logger.info("Launching 3dmod for %s", mrc_path)
-        subprocess.Popen(["3dmod", mrc_path])

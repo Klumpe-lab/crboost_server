@@ -13,7 +13,7 @@ Mode is determined by the SLURM_ARRAY_TASK_ID env var:
           aggregates alignment metadata.
 
 - Set:    TASK mode. Stages a per-TS environment (single tomostar + settings),
-          runs ts_aretomo or ts_etomo_patches for one tilt-series.
+          runs ts_aretomo for one tilt-series.
 
 Enumeration and staging:
 - The registry decides which tilt-series exist; a `*.tomostar` glob would pick
@@ -79,15 +79,6 @@ def build_alignment_command(params: TsAlignmentParams) -> ToolCommand | str:
             cmd.opt("--axis_iter", params.axis_iter)
             cmd.opt("--axis_batch", min(params.axis_batch, 1))
         return cmd
-
-    if params.alignment_method == AlignmentMethod.IMOD:
-        return (
-            ToolCommand("WarpTools ts_etomo_patches")
-            .opt("--settings", "warp_tiltseries.settings")
-            .opt("--output_processing", "warp_tiltseries")
-            .opt("--angpix", params.rescale_angpixs)
-            .opt("--patch_size", int(params.imod_patch_size * 10))
-        )
 
     return f"echo 'ERROR: Alignment method {params.alignment_method} not implemented'; exit 1;"
 
@@ -169,11 +160,9 @@ def rename_alias_files(root: Path, alias: str, ts_name: str) -> None:
 def has_alignment_output(warp_dir: Path, ts_name: str, method: AlignmentMethod) -> bool:
     """True if the per-TS tiltstack dir under `warp_dir` holds real alignment output.
 
-    WarpTools `ts_aretomo` / `ts_etomo_patches` exit 0 even when AreTomo or
-    etomo fail to align an individual tilt-series — they just flag the item
-    "unselected" and still write `{ts}.xml`. So the XML is NOT a success
-    signal; the alignment matrices are: `.st.aln` for AreTomo, `.xf` + `.tlt`
-    for IMOD.
+    WarpTools `ts_aretomo` exits 0 even when AreTomo fails to align an individual
+    tilt-series — it just flags the item "unselected" and still writes `{ts}.xml`.
+    So the XML is NOT a success signal; AreTomo's alignment, `.st.aln`, is.
     """
     tiltstack = warp_dir / "tiltstack" / ts_name
     if not tiltstack.is_dir():
@@ -182,8 +171,6 @@ def has_alignment_output(warp_dir: Path, ts_name: str, method: AlignmentMethod) 
         return False
     if method == AlignmentMethod.ARETOMO:
         return any(tiltstack.glob("*.st.aln"))
-    if method == AlignmentMethod.IMOD:
-        return any(tiltstack.glob("*.xf")) and any(tiltstack.glob("*.tlt"))
     return False
 
 

@@ -71,8 +71,6 @@ stages:
       patch_y: 0
       axis_iter: 0          # tutorial: tilt-axis refinement OFF
       axis_batch: 0
-      imod_patch_size: 200
-      imod_overlap: 50
       array_throttle: 20
   - job: tsCtf
     params:

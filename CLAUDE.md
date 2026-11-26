@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What This Is
 
-CryoBoost Server — a web-based cryo-electron tomography pipeline manager. It runs on an HPC cluster headnode, provides a NiceGUI/FastAPI browser UI, and orchestrates RELION-based processing pipelines via SLURM. External tools (RELION, Warp/AreTomo, PyTOM, CryoCARE, IMOD) run inside Apptainer containers or as native binaries, configured per-tool in `config/conf.yaml`.
+CryoBoost Server — a web-based cryo-electron tomography pipeline manager. It runs on an HPC cluster headnode, provides a NiceGUI/FastAPI browser UI, and orchestrates RELION-based processing pipelines via SLURM. External tools (RELION, Warp/AreTomo, PyTOM, cryoCARE, IsoNet, easymode) run inside Apptainer containers or as native binaries, configured per-tool in `config/conf.yaml`.
 
 ## Commands
 

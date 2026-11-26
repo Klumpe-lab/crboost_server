@@ -34,10 +34,6 @@ PROBES = {
     # A kernel launch, not is_available(): a torch built without the node's GPU architecture sees the GPU and
     # fails on its first kernel ("no kernel image is available").
     "tilt_filter": "python -c 'import torch; assert (torch.ones(1, device=\"cuda\") + 1).item() == 2'",
-    "imod": (
-        "printf '10\\t10\\t10\\n' > probe.txt && point2model probe.txt probe.mod -sphere 3 -scat && test -s probe.mod"
-    ),
-    "pymol": "python -c 'import pymol'",
     "cistem": "command -v simulate",
     # Not `easymode --help`: importing easymode writes its settings into the image's read-only default
     # cache unless the Segment job's EASYMODE_CACHE_DIR is set.

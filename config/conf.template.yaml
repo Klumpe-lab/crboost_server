@@ -423,18 +423,10 @@ tools:
     exec_mode: "container"
     container_path: "/path/to/relion5.sif"
     bin_path: ""
-  imod:
-    exec_mode: "container"
-    container_path: "/path/to/imod.sif"
-    bin_path: ""
   cistem:
     exec_mode: "binary"
     container_path: ""
     bin_path: "/path/to/cisTEM/bin"   # the directory holding `simulate`, e.g. /groups/<name_of_group>/software/cisTEM/bin
-  pymol:
-    exec_mode: "container"
-    container_path: "/path/to/pymol.sif"
-    bin_path: ""
   # warpem miss-alignment: learned tilt-series alignment refinement (Warp-native).
   miss_alignment:
     exec_mode: "container"

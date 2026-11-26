@@ -55,7 +55,7 @@ _ALIASES = {
     "fsMotionAndCtf": "motion ctf fs",
     "tsImport": "tilt series import",
     "tiltFilter": "filter tilts",
-    "aligntiltsWarp": "align aretomo imod",
+    "aligntiltsWarp": "align aretomo",
     "missAlign": "missalignment refine alignment",
     "tsCtf": "ctf defocus",
     "tsReconstruct": "reconstruct tomograms recon",

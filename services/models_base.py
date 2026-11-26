@@ -29,8 +29,6 @@ class MicroscopeType(str, Enum):
 
 class AlignmentMethod(str, Enum):
     ARETOMO = "AreTomo"
-    IMOD = "IMOD"
-    RELION = "Relion"
 
 
 class DenoiseMethod(str, Enum):

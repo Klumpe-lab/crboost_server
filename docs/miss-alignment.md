@@ -83,7 +83,7 @@ crboost runs tools as `apptainer exec --nv --cleanenv` (see
 ## 4. Input / output contract
 
 **Input** — a Warp project layout with an **initial coarse alignment already done**
-(AreTomo/etomo — crboost's `aligntiltsWarp` provides it):
+(crboost's `aligntiltsWarp` provides it, with AreTomo):
 
 ```
 <root>/

@@ -163,8 +163,10 @@ class TsAlignmentTiltSeriesOutput(_OutputBase):
     alignment_method: Literal["aretomo", "imod", "miss_alignment"]
     alignment_angpix: float
     aln_file: Path | None = None  # AreTomo .st.aln
-    xf_file: Path | None = None  # IMOD .xf
-    tlt_file: Path | None = None  # IMOD .tlt
+    # IMOD's .xf and .tlt, when crboost offered IMOD's alignment (gone 2026-11-26): kept for the registries that
+    # hold them as null, since the model forbids unknown keys.
+    xf_file: Path | None = None
+    tlt_file: Path | None = None
     per_frame: list[TsAlignmentPerFrame] = Field(default_factory=list)
 
 

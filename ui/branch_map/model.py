@@ -503,7 +503,6 @@ TOOLS = {
     "cryocare": "cryoCARE",
     "isonet": "IsoNet",
     "crboost": "CryoBoost",
-    "imod": "IMOD",
     "tilt_filter": "DL model",
 }
 # The parameter that is a type's method, and how its values read.
@@ -515,13 +514,7 @@ METHOD_FIELD = {
     "tiltFilter": "mode",
     "tmextractcand": "source",
 }
-METHOD_WORDS = {
-    "dl_review": "DL review",
-    "dl_auto": "DL auto",
-    "dl": "DL model",
-    "manual": "by hand",
-    "Relion": "RELION",
-}
+METHOD_WORDS = {"dl_review": "DL review", "dl_auto": "DL auto", "dl": "DL model", "manual": "by hand"}
 GLOSS = {
     "RELION": "RELION's import: the tilt series and their metadata into the project",
     "WarpTools": "Warp's command-line tools: motion, CTF and tomogram reconstruction",
@@ -530,7 +523,6 @@ GLOSS = {
     "DL auto": "the deep-learning tilt classifier scores each tilt and its verdicts stand",
     "by hand": "tilts reviewed and taken out by hand",
     "AreTomo": "AreTomo: marker-free tilt-series alignment on the GPU",
-    "IMOD": "IMOD: fiducial or patch-tracking alignment",
     "miss-alignment": "a refinement of the alignment, tilt by tilt",
     "cryoCARE": "cryoCARE: noise2noise denoising trained on this project's even and odd tomograms",
     "IsoNet": "IsoNet: denoising with missing-wedge correction",

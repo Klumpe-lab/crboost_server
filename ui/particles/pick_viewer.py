@@ -3719,24 +3719,6 @@ def _collect_tomo_rows_for_instance(job_dir: Path, project_path: Path, *, only: 
 # ---------------------------------------------------------------------------
 
 
-def _make_imod_command_runner():
-    from services.computing.container_service import get_container_service
-
-    container_service = get_container_service()
-
-    def runner(cmd: str, cwd: Path) -> None:
-        import subprocess
-
-        wrapped = container_service.wrap_command_for_tool(cmd, cwd=cwd, tool_name="imod", additional_binds=[str(cwd)])
-        result = subprocess.run(wrapped, shell=True, capture_output=True, text=True, cwd=cwd)
-        if result.returncode != 0:
-            raise RuntimeError(
-                f"Container command failed (rc={result.returncode}): {result.stderr.strip() or result.stdout.strip()}"
-            )
-
-    return runner
-
-
 # Beside a job's .mod overlays: the signature of the stars they were made from.
 _IMOD_STAMP = ".made_from.json"
 
@@ -3780,14 +3762,13 @@ def _generate_imod_sync(
     candidates_star: Path, tomograms_star: Path, diameter: float, job_dir: Path, project_path: Path
 ) -> str:
     """The job's .mod overlays for 3dmod (`generate_candidate_vis`), stamped with the stars they were made
-    from. Raises when not one .mod came out: `point2model` failures are only logged on their way."""
+    from. Raises when not one .mod came out."""
     made_from = _imod_sources_signature(job_dir)
     generate_candidate_vis(
         candidates_star=candidates_star,
         tomograms_star=tomograms_star,
         particle_diameter_ang=diameter,
         output_dir=job_dir,
-        command_runner=_make_imod_command_runner(),
         project_root=project_path,
     )
     imod_dir = _imod_dir(job_dir)

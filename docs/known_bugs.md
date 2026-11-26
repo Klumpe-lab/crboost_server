@@ -142,8 +142,7 @@ import the alignment, gives up on the series, flags it `UnselectManual`, and exi
 that already hit it keeps its motion correction and tilt filter; only alignment and what follows re-run, now
 under the alias. Alignment FAILED (no name was short enough): press Run, it retries in place. Alignment
 SUCCEEDED with series dropped: delete the alignment job and every job after it, re-add them, Run. A project
-from before 2026-09-09 whose alignment "succeeded" on nominal angles must re-run from alignment on. Open: does
-IMOD (`ts_etomo_patches`), which is not aliased, have a limit of its own?
+from before 2026-09-09 whose alignment "succeeded" on nominal angles must re-run from alignment on.
 
 ---
 

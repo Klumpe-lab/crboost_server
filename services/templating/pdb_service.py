@@ -1,18 +1,63 @@
 import os
-import json
 import asyncio
 import logging
 import subprocess
 from pathlib import Path
-import textwrap
 from typing import Any
+
+import numpy as np
 from services.computing.container_service import get_container_service
 from services.computing.processes import run_process
 from services.configs.config_service import get_config_service
 from services.result import err, ok
 from services.templating.template_service import normalize_white_and_negate_to_black
+from services.workers import WorkKind, run_in_worker
 
 logger = logging.getLogger(__name__)
+
+
+def _first_model_atoms(path: str) -> tuple[Any, list]:
+    """The first model of a PDB or mmCIF file and its atoms, every alternate location included: what PyMOL
+    loaded, whose place these functions took (roadmap 63 D7)."""
+    from Bio.PDB import MMCIFParser, PDBParser
+
+    parser = MMCIFParser(QUIET=True) if path.lower().endswith((".cif", ".mmcif")) else PDBParser(QUIET=True)
+    model = next(iter(parser.get_structure("structure", path)))
+    atoms = [atom for residue in model.get_residues() for atom in residue.get_unpacked_list()]
+    if not atoms:
+        raise ValueError(f"{os.path.basename(path)} holds no atoms")
+    return model, atoms
+
+
+def structure_extent(path: str) -> dict[str, Any]:
+    """The model's bounding box in Å, its longest side, and how many of its atoms are named CA."""
+    _model, atoms = _first_model_atoms(path)
+    xyz = np.array([atom.coord for atom in atoms], dtype=np.float64)
+    dims = xyz.max(axis=0) - xyz.min(axis=0)
+    return {
+        "residues": sum(atom.get_id() == "CA" for atom in atoms),
+        "bbox": [round(float(d), 2) for d in dims],
+        "max_dim": round(float(dims.max()), 2),
+        "symmetry": "C1",
+    }
+
+
+def write_centered_cif(path: str, out_path: str, offset: float) -> int:
+    """Write the model's first model as mmCIF with the centroid of its atoms (each atom weighing the same, as
+    PyMOL's centre did) moved to (offset, offset, offset). Returns how many atoms it wrote."""
+    from Bio.PDB import MMCIFIO
+
+    model, atoms = _first_model_atoms(path)
+    xyz = np.array([atom.coord for atom in atoms], dtype=np.float64)
+    shift = offset - xyz.mean(axis=0)
+    for atom, coord in zip(atoms, xyz + shift, strict=True):
+        atom.set_coord(coord.astype(np.float32))
+    io = MMCIFIO()
+    io.set_structure(model)
+    io.save(out_path)
+    if not os.path.getsize(out_path):
+        raise OSError(f"{out_path} was written empty")
+    return len(atoms)
 
 
 class PDBService:
@@ -41,176 +86,19 @@ class PDBService:
         return int(box_size)
 
     # =========================================================================
-    # PYMOL WRAPPER
-    # =========================================================================
-
-    async def _run_pymol_script(
-        self, script_content: str, output_dir: Path, additional_binds: list | None = None
-    ) -> dict[str, Any]:
-        output_dir = Path(output_dir).resolve()
-        output_dir.mkdir(parents=True, exist_ok=True)
-
-        script_file = output_dir / "pymol_script.py"
-        script_file.write_text(script_content)
-
-        cmd = f"python3 {script_file.name}"
-        result = await self.backend.run_shell_command(
-            cmd, cwd=output_dir, tool_name="pymol", additional_binds=additional_binds or []
-        )
-
-        # Only delete on success; keep the script for debugging otherwise
-        if result.get("success") and script_file.exists():
-            script_file.unlink()
-        else:
-            logger.info("Script kept for debugging: %s", script_file)
-
-        return result
-
-    # =========================================================================
-    # CIF POST-PROCESSING - required for cisTEM compatibility
-    # =========================================================================
-
-    def _reparse_cif(self, cif_path: Path) -> bool:
-        """
-        Re-parse and re-save CIF using BioPython.
-        PyMOL's CIF output may have formatting issues.
-        """
-        try:
-            from Bio.PDB import MMCIFParser, MMCIFIO
-
-            parser = MMCIFParser(QUIET=True)
-            structure = parser.get_structure("structure_id", str(cif_path))
-            io = MMCIFIO()
-            io.set_structure(structure)
-            io.save(str(cif_path))
-            return True
-        except Exception as e:
-            logger.info("CIF re-parsing failed: %s", e)
-            return False
-
-    # =========================================================================
     # STRUCTURE METADATA
     # =========================================================================
 
     async def get_structure_metadata(self, pdb_path: str) -> dict[str, Any]:
-        """Extract metadata using PyMOL."""
-        pdb_path = str(Path(pdb_path).resolve())
-
-        script = textwrap.dedent(f"""
-import pymol2
-import json
-import sys
-
-try:
-    pymol = pymol2.PyMOL()
-    pymol.start()
-    
-    pymol.cmd.load("{pdb_path}", "structure")
-    
-    min_xyz, max_xyz = pymol.cmd.get_extent("structure")
-    dims = [max_xyz[i] - min_xyz[i] for i in range(3)]
-    max_dim = max(dims)
-    res_count = pymol.cmd.count_atoms("structure and name CA")
-    
-    result = {{
-        "success": True,
-        "residues": int(res_count),
-        "bbox": [round(float(x), 2) for x in dims],
-        "max_dim": round(float(max_dim), 2),
-        "symmetry": "C1"
-    }}
-    
-    print("PYMOL_RESULT:" + json.dumps(result))
-    pymol.stop()
-    
-except Exception as e:
-    print("PYMOL_ERROR:" + str(e), file=sys.stderr)
-    import traceback
-    traceback.print_exc(file=sys.stderr)
-    sys.exit(1)
-""").strip()
-
-        output_dir = Path(pdb_path).parent
-        result = await self._run_pymol_script(script, output_dir, [str(output_dir)])
-
-        if not result.get("success"):
-            return err(result.get("error") or "Unknown error")
-
-        stdout = result.get("output", "")
-        for line in stdout.split("\n"):
-            if line.startswith("PYMOL_RESULT:"):
-                return json.loads(line.replace("PYMOL_RESULT:", ""))
-
-        return err("No result found in PyMOL output")
-
-    # =========================================================================
-    # ALIGNMENT
-    # =========================================================================
-
-    async def align_to_principal_axes(self, input_path: str, output_path: str) -> dict[str, Any]:
-        """Align structure using PyMOL."""
-        input_path = str(Path(input_path).resolve())
-        output_path = str(Path(output_path).resolve())
-
-        script = textwrap.dedent(f"""
-import pymol2
-import numpy as np
-import json
-import sys
-
-try:
-    pymol = pymol2.PyMOL()
-    pymol.start()
-    
-    pymol.cmd.load("{input_path}", "structure")
-    
-    coords = pymol.cmd.get_coords("structure")
-    center = np.mean(coords, axis=0)
-    centered_coords = coords - center
-    
-    covariance_matrix = np.cov(centered_coords.T)
-    eigenvalues, eigenvectors = np.linalg.eigh(covariance_matrix)
-    
-    idx = eigenvalues.argsort()[::-1]
-    eigenvalues = eigenvalues[idx]
-    eigenvectors = eigenvectors[:, idx]
-    
-    aligned_coords = np.dot(centered_coords, eigenvectors)
-    pymol.cmd.load_coords(aligned_coords.tolist(), "structure")
-    
-    fmt = "cif" if "{output_path}".endswith(".cif") else "pdb"
-    pymol.cmd.save("{output_path}", "structure", format=fmt)
-    
-    pymol.stop()
-    
-    print("PYMOL_RESULT:" + json.dumps({{"success": True, "path": "{output_path}"}}))
-    
-except Exception as e:
-    print("PYMOL_ERROR:" + str(e), file=sys.stderr)
-    import traceback
-    traceback.print_exc(file=sys.stderr)
-    sys.exit(1)
-""").strip()
-
-        output_dir = Path(output_path).parent
-        input_dir = Path(input_path).parent
-
-        result = await self._run_pymol_script(script, output_dir, [str(input_dir), str(output_dir)])
-
-        if not result.get("success"):
-            return err(result.get("error") or "Unknown error")
-
-        # Re-parse CIF on host
-        if output_path.endswith(".cif") and Path(output_path).exists():
-            if not self._reparse_cif(Path(output_path)):
-                return err("CIF post-processing failed")
-
-        stdout = result.get("output", "")
-        for line in stdout.split("\n"):
-            if line.startswith("PYMOL_RESULT:"):
-                return json.loads(line.replace("PYMOL_RESULT:", ""))
-
-        return ok(path=output_path)
+        """The model's bounding box and its longest side, read in a worker: a ribosome is 200,000 atoms of
+        Python objects."""
+        path = str(Path(pdb_path).resolve())
+        try:
+            meta = await run_in_worker(WorkKind.TEMPLATE, structure_extent, path)
+        except Exception as e:
+            logger.exception("Reading %s failed", path)
+            return err(f"Could not read {Path(path).name}: {e}")
+        return ok(**meta)
 
     # =========================================================================
     # CISTEM SIMULATION
@@ -266,8 +154,7 @@ except Exception as e:
                 resolution,
             )
 
-            # Run CISTEM with PyMOL preprocessing
-            sim_result = await self._run_cistem_with_pymol(
+            sim_result = await self._run_cistem(
                 pdb_path=pdb_path,
                 output_folder=output_folder,
                 base_name=base_name,
@@ -317,7 +204,7 @@ except Exception as e:
             logger.error("✗ %s", error_detail)
             return err(error_detail)
 
-    async def _run_cistem_with_pymol(
+    async def _run_cistem(
         self,
         pdb_path: str,
         output_folder: str,
@@ -330,92 +217,30 @@ except Exception as e:
         num_frames: int,
         num_threads: int,
     ) -> dict[str, Any]:
-        """
-        Prepare structure with PyMOL then run CISTEM.
-        Uses absolute paths throughout; cisTEM supports them natively.
-        Supports both container and binary modes via ContainerService.
-        """
-
-        import textwrap
-        from pathlib import Path
-
+        """Put the model in the middle of the simulation box, then simulate its density with cisTEM, as a
+        container or a binary (ContainerService). Absolute paths throughout; cisTEM takes them."""
         output_folder = Path(output_folder).resolve()
         output_folder.mkdir(parents=True, exist_ok=True)
 
-        # Output files (all absolute paths)
         struct_file = output_folder / f"{base_name}_for_sim.cif"
         sim_output_path = output_folder / f"{base_name}_sim_raw.mrc"
 
-        # Calculate offset for PyMOL transformation
+        # cisTEM's box has its origin at a corner: the model's centroid goes to the box's middle.
         offset = (sim_box / 2.0) * sim_apix
-
         logger.info(
-            "Step 1/3: PyMOL Structure Preparation: input=%s, output=%s, translate=[%.1f, %.1f, %.1f]",
+            "Step 1/3: structure preparation: input=%s, output=%s, centroid to [%.1f, %.1f, %.1f]",
             Path(pdb_path).name,
             struct_file.name,
             offset,
             offset,
             offset,
         )
-
-        # === PYMOL PREPARATION ===
-        pymol_script = textwrap.dedent(
-            f"""
-            import pymol2
-            import sys
-            import os
-
-            try:
-                pymol = pymol2.PyMOL()
-                pymol.start()
-
-                pymol.cmd.load("{pdb_path}", "structure")
-
-                # Center by center-of-mass
-                com = pymol.cmd.get_position("structure")
-                pymol.cmd.translate([-com[0], -com[1], -com[2]], "structure")
-
-                # Translate to positive quadrant
-                pymol.cmd.translate([{offset}, {offset}, {offset}], "structure")
-
-                # Save as CIF
-                pymol.cmd.save("{struct_file}", "structure", format="cif")
-
-                # Verify file was created
-                if not os.path.exists("{struct_file}"):
-                    raise Exception("PyMOL did not create output file")
-
-                file_size = os.path.getsize("{struct_file}")
-                if file_size == 0:
-                    raise Exception("PyMOL created empty file")
-
-                pymol.stop()
-
-                print("PYMOL_SUCCESS")
-
-            except Exception as e:
-                print("PYMOL_ERROR:" + str(e), file=sys.stderr)
-                import traceback
-                traceback.print_exc(file=sys.stderr)
-                sys.exit(1)
-            """
-        ).strip()
-
-        binds_needed = list(set([str(Path(pdb_path).parent), str(output_folder)]))
-
-        pymol_result = await self._run_pymol_script(pymol_script, output_folder, binds_needed)
-
-        if not pymol_result.get("success"):
-            return err(f"PyMOL failed: {pymol_result.get('error') or 'unknown error'}")
-
-        # Verify the file exists on the host
-        if not struct_file.exists():
-            return err(f"PyMOL did not create {struct_file.name}")
-
-        # Re-parse CIF using BioPython (as the original libpdb.py does)
-        logger.info("Re-parsing CIF with BioPython...")
-        if not self._reparse_cif(struct_file):
-            return err("CIF post-processing failed")
+        try:
+            n_atoms = await run_in_worker(WorkKind.TEMPLATE, write_centered_cif, pdb_path, str(struct_file), offset)
+        except Exception as e:
+            logger.exception("Preparing %s failed", pdb_path)
+            return err(f"Could not prepare {Path(pdb_path).name} for the simulation: {e}")
+        logger.info("%d atoms written", n_atoms)
 
         logger.info("✓ Structure prepared: %s (%s bytes)", struct_file.name, f"{struct_file.stat().st_size:,}")
 

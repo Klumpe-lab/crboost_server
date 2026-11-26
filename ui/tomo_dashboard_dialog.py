@@ -1723,7 +1723,6 @@ def _render_ts_alignment_section(ts_name: str, project_state, project_path: Path
         ("sample thickness", f"{jm.sample_thickness_nm:g} nm"),
         ("patches X / Y", f"{jm.patch_x} / {jm.patch_y}"),
         ("axis iterations / batch", f"{jm.axis_iter} / {jm.axis_batch}"),
-        ("IMOD patch size / overlap", f"{jm.imod_patch_size} / {jm.imod_overlap}"),
         ("per device", str(jm.perdevice)),
     ]
     title = "Alignment"
