@@ -1,0 +1,58 @@
+Bootstrap: docker
+From: ubuntu@sha256:562111b88caa79c71391c0c4d3c2114a7d5c35915c20561fd893cb1e07929e6b
+# ubuntu:24.04 on 2026-11-25, by digest (Apptainer takes a tag or a digest, not both). Roadmap 63 D17.
+
+# The DL tilt filter's classifier: torch 2.8.0 (PyPI's Linux wheel, CUDA 12.8, sm_100 SASS for CBE.next's B200s),
+# torchvision 0.23.0, Pillow and numpy, in a uv environment on Python 3.11 (roadmap 63 D19: pip-only images go
+# through uv). The packages of the image the lab runs (tilt_filter_torch2.8.0_cuda12.8.def, on python:3.11-slim),
+# installed from the lock exported from it, every file by sha256. The wheel carries its own CUDA libraries: no CUDA
+# base, and the driver comes from the host through --nv.
+# The network's code is not baked in: crboost binds its checkout's filterTilts/ and runs
+# `python -m filterTilts.deepLearning.predict` with PYTHONPATH pointing at the checkout.
+
+%files
+    build_env.sh /opt/crboost/build_env.sh
+    tilt_filter-torch-2.8.0_cuda12.8_ubuntu24.04.pip.lock /opt/locks/pip.lock
+
+%environment
+    # The user's home is bound into the container: a user-site package must not shadow the image's.
+    export PYTHONNOUSERSITE=1
+    export PATH="/opt/venv/bin:$PATH"
+
+%post
+    set -e
+    . /opt/crboost/build_env.sh
+    apt_install ca-certificates curl
+    install_uv
+    # The running image's Python was 3.11.18.
+    uv python install 3.11.18
+    uv venv --python 3.11.18 /opt/venv
+    uv pip install --python /opt/venv/bin/python --no-deps --require-hashes --compile-bytecode -r /opt/locks/pip.lock
+    rm /usr/local/bin/uv
+
+    # Verify here, not in %test: a failing %test does not fail an Apptainer build.
+    P=/opt/venv/bin/python
+    $P --version | grep -q '^Python 3\.11\.18$'
+    # get_arch_list() is [] without a GPU; the compiled-in flags are not.
+    $P -c "import torch, torchvision; a = torch._C._cuda_getArchFlags(); print(torch.__version__, torchvision.__version__, a); assert (torch.__version__, torchvision.__version__) == ('2.8.0+cu128', '0.23.0+cu128') and 'sm_100' in a, a"
+    $P -c "import numpy, PIL; print('numpy', numpy.__version__, 'Pillow', PIL.__version__); assert (numpy.__version__, PIL.__version__) == ('1.26.2', '12.0.0')"
+
+%test
+    # The real checks run at the end of %post (a failing %test does not fail the build).
+    python -c "import torch, torchvision, PIL, numpy"
+
+%runscript
+    exec python "$@"
+
+%labels
+    crboost.tool tilt_filter
+    crboost.def tilt_filter-torch-2.8.0_cuda12.8_ubuntu24.04
+    org.opencontainers.image.title crboost tilt filter runtime
+    org.opencontainers.image.version torch 2.8.0
+    org.opencontainers.image.source https://github.com/Klumpe-lab/crboost_server
+    org.opencontainers.image.licenses PyTorch, torchvision, Pillow, numpy and their dependencies under their own
+
+%help
+    The tilt filter's classifier: python -m filterTilts.deepLearning.predict, run from a crboost_server checkout
+    (the checkout's filterTilts/ directory is bound in, with PYTHONPATH pointing at the checkout).
+      apptainer exec --nv <image>.sif python -c "import torch; print(torch.cuda.is_available())"

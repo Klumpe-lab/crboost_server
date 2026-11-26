@@ -1,0 +1,105 @@
+Bootstrap: docker
+From: ubuntu@sha256:562111b88caa79c71391c0c4d3c2114a7d5c35915c20561fd893cb1e07929e6b
+# ubuntu:24.04 on 2026-11-25, by digest (Apptainer takes a tag or a digest, not both). Roadmap 63 D17.
+
+# napari on a GPU node, seen over a VNC desktop. TigerVNC's Xvnc draws the 2-D desktop; VirtualGL renders napari's
+# OpenGL on the GPU through its EGL back end (`vglrun -d egl`) under `apptainer exec --nv` and reads the frames back
+# into the desktop. This is the arrangement of chimerax_artiax_GL.def, and the same worker runs both
+# (containers/chimerax_artiax/curation_session.sh with CB_APP=napari). 24.04's glibc (2.39) loads the EL10 host GL/EGL
+# libraries that --nv mounts; images with glibc older than 2.36 fail on them with GLIBC_ABI_DT_RELR.
+#
+# napari 0.10.0, PyQt6, mrcfile, napari-mrcfile-reader (the colleague's viewer reads volumes with it) and websockify
+# (serves the desktop to Open OnDemand's noVNC, roadmap 55) live in a uv environment at /opt/napari on Python 3.12, apart
+# from the system Python: the packages of the image the lab runs (napari_GL_v2.def), installed from the lock exported
+# from it, every file by sha256. crboost's launcher (containers/napari/open_tomogram.py) is not baked in: the worker
+# runs it from the server's checkout, so it always matches the server that started the session.
+#
+# Run (the worker does this):
+#   apptainer exec --nv <binds> <image>.sif /opt/VirtualGL/bin/vglrun -d egl \
+#       /opt/napari/bin/python containers/napari/open_tomogram.py --session-dir <dir>
+
+%files
+    build_env.sh /opt/crboost/build_env.sh
+    napari-0.10.0_pyqt6_virtualgl-3.1.4_ubuntu24.04.pip.lock /opt/locks/pip.lock
+
+%environment
+    export PATH=/opt/napari/bin:/opt/VirtualGL/bin:$PATH
+    # The user's home is bound into the container: a user-site package must not shadow the image's.
+    export PYTHONNOUSERSITE=1
+    # MIT-SHM does not work between the container's X clients and Xvnc.
+    export QT_X11_NO_MITSHM=1
+
+%post
+    set -e
+    . /opt/crboost/build_env.sh
+    apt_install ca-certificates curl
+    # VirtualGL is not in apt: the .deb from its GitHub release.
+    fetch https://github.com/VirtualGL/virtualgl/releases/download/3.1.4/virtualgl_3.1.4_amd64.deb \
+        02edc6b599571c385389af1a006f07a70c298e1d97c580a9bfd4b39d835c51e6 /tmp/virtualgl.deb
+    # x11vnc only for `x11vnc -storepasswd`: the worker mints the session's VncAuth password file with it, the same
+    # way in every image it runs. No xterm and no dbus: their packages set group ownership (utmp, messagebus) that a
+    # root-only fakeroot cannot, and the session runs nothing but the window manager and napari.
+    apt_install \
+        /tmp/virtualgl.deb \
+        libgl1 libglx0 libglx-mesa0 libgl1-mesa-dri libegl1 libegl-mesa0 libopengl0 libglvnd0 libglu1-mesa \
+        mesa-utils \
+        tigervnc-standalone-server tigervnc-common fluxbox x11vnc \
+        fonts-dejavu-core \
+        libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-randr0 libxcb-render-util0 \
+        libxcb-shape0 libxcb-xinerama0 libxcb-xkb1 libxcb-xfixes0 libxcb-sync1 libxcb-glx0 libxcb-shm0 \
+        libxkbcommon-x11-0 libxkbcommon0 libx11-xcb1 libsm6 libice6 libxext6 libxrender1 libxi6 libxtst6 \
+        libxrandr2 libxfixes3 libxcursor1 libxdamage1 libxcomposite1 \
+        libfontconfig1 libfreetype6 libdbus-1-3 libglib2.0-0t64
+    rm /tmp/virtualgl.deb
+    # apptainer's --nv mounts the NVIDIA EGL library but not GLVND's vendor file that names it, so EGL would only find
+    # Mesa. The worker points __EGL_VENDOR_LIBRARY_FILENAMES at this file.
+    mkdir -p /usr/share/glvnd/egl_vendor.d
+    cat > /usr/share/glvnd/egl_vendor.d/10_nvidia.json <<'JSON'
+{
+    "file_format_version" : "1.0.0",
+    "ICD" : {
+        "library_path" : "libEGL_nvidia.so.0"
+    }
+}
+JSON
+
+    install_uv
+    # The running image's venv was on Ubuntu's Python 3.12.3; this one is uv's build of the same version.
+    uv python install 3.12.3
+    uv venv --python 3.12.3 /opt/napari
+    # Bytecode compiled now is what makes startup fast: the image is read-only at run time.
+    uv pip install --python /opt/napari/bin/python --no-deps --require-hashes --compile-bytecode -r /opt/locks/pip.lock
+    rm /usr/local/bin/uv
+    chmod -R a+rX /opt/napari /opt/python
+
+    # Verify here, not in %test: a failing %test does not fail an Apptainer build.
+    /opt/napari/bin/python -c "
+import napari, mrcfile, vispy, numpy, scipy, imageio, napari_mrcfile_reader, websockify
+from PyQt6 import QtCore
+print('napari', napari.__version__, 'mrcfile', mrcfile.__version__, 'vispy', vispy.__version__,
+      'numpy', numpy.__version__, 'Qt', QtCore.QT_VERSION_STR)
+assert napari.__version__ == '0.10.0', napari.__version__
+"
+    ldd_complete /opt/napari/lib/python3.12/site-packages/PyQt6/Qt6/plugins/platforms/libqxcb.so
+    test -x /opt/VirtualGL/bin/vglrun
+    test -x /opt/napari/bin/websockify
+    command -v Xtigervnc || command -v Xvnc
+
+%test
+    # The real checks run at the end of %post (a failing %test does not fail the build).
+    /opt/napari/bin/python -c "import napari, mrcfile"
+
+%runscript
+    exec /opt/napari/bin/napari "$@"
+
+%labels
+    crboost.tool napari
+    crboost.def napari-0.10.0_pyqt6_virtualgl-3.1.4_ubuntu24.04
+    org.opencontainers.image.title napari for crboost's viewer sessions
+    org.opencontainers.image.version napari 0.10.0, VirtualGL 3.1.4
+    org.opencontainers.image.source https://github.com/Klumpe-lab/crboost_server
+    org.opencontainers.image.licenses BSD-3-Clause (napari); PyQt6 GPL-3.0; VirtualGL wxWindows; others under their own
+
+%help
+    napari for crboost's viewer sessions: Xvnc + VirtualGL + napari in /opt/napari, run on a GPU node by
+    containers/chimerax_artiax/curation_session.sh with CB_APP=napari.

@@ -28,7 +28,7 @@ side.
   the *render*, not transport — a viewer swap won't fix it; the GPU variant does). The X session
   persists on the node until ChimeraX quits, so you can disconnect/reconnect without losing state.
 - **Fits the existing pattern.** Same `apptainer exec` conventions and `cryoboost_containers/` home
-  as `pymol.sif`, `relion5.0_tomo.sif`, etc.
+  as the tools' images.
 
 ## Build (once)
 Fully self-contained — `%post` fetches ChimeraX from UCSF (license auto-accepted) and bakes in

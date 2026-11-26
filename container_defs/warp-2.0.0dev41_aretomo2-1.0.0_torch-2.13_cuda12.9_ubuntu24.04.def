@@ -1,0 +1,125 @@
+Bootstrap: docker
+From: nvidia/cuda@sha256:020bc241a628776338f4d4053fed4c38f6f7f3d7eb5919fecb8de313bb8ba47c
+# nvidia/cuda:12.9.1-devel-ubuntu24.04 on 2026-11-25, by digest (Apptainer takes a tag or a digest, not both).
+Stage: build
+
+# WarpTools 2.0.0dev41 with M (MTools, MCore) and AreTomo2 v1.0.0, in two stages (roadmap 63 D17, D19). AreTomo2
+# compiles here, on NVIDIA's CUDA devel base (its makefile11 is written for CUDA 12), with Blackwell SASS and
+# compute_100 PTX added; only its binary goes on. The image itself is plain Ubuntu 24.04 with Warp's conda
+# environment, which brings its own CUDA 12.9 runtime, PyTorch and .NET; AreTomo2 loads its cufft and cudart from it.
+# The environment is the lab's (warp-2.0.0dev41_aretomo2-1.0.0_torch2.13_cuda12.9_sm100.def): the image's packages
+# with PyTorch 2.13.0 in place of 2.14.1, which broke LibTorchSharp (roadmap 67 §11); its lock's header says how.
+
+%files
+    build_env.sh /opt/crboost/build_env.sh
+
+%post
+    set -e
+    . /opt/crboost/build_env.sh
+    apt_install build-essential gcc-12 g++-12 git ca-certificates
+    # CUDA 12.9's libcu++ uses GCC 13's __remove_reference builtin in function signatures, which GCC 13 rejects
+    # (Ubuntu 24.04's default): AreTomo2 compiles with GCC 12. Its makefile11 calls g++ and nvcc takes the host
+    # compiler from PATH, so g++ is GCC 12 on PATH here.
+    mkdir -p /opt/gcc12/bin
+    ln -s /usr/bin/gcc-12 /opt/gcc12/bin/gcc
+    ln -s /usr/bin/gcc-12 /opt/gcc12/bin/cc
+    ln -s /usr/bin/g++-12 /opt/gcc12/bin/g++
+    ln -s /usr/bin/g++-12 /opt/gcc12/bin/c++
+    export PATH="/opt/gcc12/bin:$PATH"
+    nvcc --version
+    g++ --version | grep -q ' 12\.'
+
+    git clone https://github.com/czimaginginstitute/AreTomo2.git /opt/src/AreTomo2
+    cd /opt/src/AreTomo2
+    git checkout f7d1d44c6cb68756be4776b4c3a79a02f491e278  # tag v1.0.0, as the staged image was built
+    sed -i 's|-o AreTomo2|-no-pie -o AreTomo2|' makefile11
+    # Add Blackwell SASS and compute_100 PTX (the PTX lets the driver JIT for GPUs newer than sm_100).
+    sed -i 's|-gencode arch=compute_86,code=sm_86|-gencode arch=compute_86,code=sm_86 -gencode arch=compute_100,code=sm_100 -gencode arch=compute_100,code=compute_100|' makefile11
+    grep -q 'code=sm_100' makefile11
+    make exe -f makefile11 CUDAHOME=/usr/local/cuda PRJLIB=./Lib
+    mkdir -p /opt/aretomo2/bin
+    cp AreTomo2 /opt/aretomo2/bin/
+    cp LICENSE* /opt/aretomo2/ 2>/dev/null || true
+    # Verify here, where cuobjdump is: AreTomo2 carries Blackwell SASS and PTX.
+    cuobjdump --list-elf /opt/aretomo2/bin/AreTomo2 | grep -q sm_100
+    cuobjdump --list-ptx /opt/aretomo2/bin/AreTomo2 | grep -q sm_100
+
+Bootstrap: docker
+From: ubuntu@sha256:562111b88caa79c71391c0c4d3c2114a7d5c35915c20561fd893cb1e07929e6b
+# ubuntu:24.04 on 2026-11-25, by digest.
+Stage: final
+
+%files
+    build_env.sh /opt/crboost/build_env.sh
+    warp-2.0.0dev41_aretomo2-1.0.0_torch-2.13_cuda12.9_ubuntu24.04.conda.lock /opt/locks/conda.lock
+
+%files from build
+    /opt/aretomo2
+
+%environment
+    export PYTHONNOUSERSITE=1
+    export PATH="/opt/aretomo2/bin:/opt/miniforge3/envs/warp/bin:$PATH"
+    export LD_LIBRARY_PATH="/opt/miniforge3/envs/warp/lib:$LD_LIBRARY_PATH"
+
+%post
+    set -e
+    . /opt/crboost/build_env.sh
+    # fontconfig for .NET's drawing; the rest comes from the environment.
+    apt_install ca-certificates curl libfontconfig1
+    install_miniforge
+    conda create -n warp -y --file /opt/locks/conda.lock
+    conda clean --all -y
+    ln -s /opt/aretomo2/bin/AreTomo2 /usr/local/bin/AreTomo
+
+    # Verify here, not in %test: a failing %test does not fail an Apptainer build. With the image's library path.
+    W=/opt/miniforge3/envs/warp
+    export LD_LIBRARY_PATH="$W/lib"
+    test ! -e /usr/local/cuda
+    # LibTorchSharp must resolve every symbol against this libtorch: ldd -r, then a dlopen the way .NET loads it.
+    ldd -r $W/lib/libLibTorchSharp.so > /tmp/libtorchsharp.ldd 2>&1 || true
+    if grep -q -E 'undefined symbol|not found' /tmp/libtorchsharp.ldd; then cat /tmp/libtorchsharp.ldd; exit 1; fi
+    rm /tmp/libtorchsharp.ldd
+    $W/bin/python -c "import ctypes; ctypes.CDLL('$W/lib/libLibTorchSharp.so'); print('LibTorchSharp loads')"
+    $W/bin/python -c "import torch; v = torch.__version__; print('torch', v); assert v == '2.13.0', v"
+    # torch._C._cuda_getArchFlags() works without a GPU (torch.cuda.get_arch_list() is empty there).
+    $W/bin/python -c "import torch; f = torch._C._cuda_getArchFlags(); print(f); assert 'sm_100' in f, f"
+    # AreTomo2 loads everything but the driver (libcuda comes from the host through --nv) from the environment.
+    if ldd /opt/aretomo2/bin/AreTomo2 | grep 'not found' | grep -v -q 'libcuda.so.1'; then
+        ldd /opt/aretomo2/bin/AreTomo2
+        exit 1
+    fi
+    ldd /opt/aretomo2/bin/AreTomo2 | grep -q "libcufft.so.11 => $W/lib/"
+    # dev40+ only: the environment holds the Warp it should.
+    $W/bin/WarpTools ts_export_particles --help 2>&1 | grep -q -- "--dont_premultiply"
+    # M's tools start: the .NET runtime, ICU and their assemblies load.
+    $W/bin/MTools create_species --help 2>&1 | grep -q -- "--dont_use_denoiser"
+    $W/bin/MCore --help 2>&1 | grep -q -- "--refine_imagewarp"
+
+%test
+    # The real checks run at the end of %post (a failing %test does not fail the build).
+    test -x /opt/aretomo2/bin/AreTomo2
+
+%runscript
+    if [ $# -gt 0 ]; then
+        exec "$@"
+    else
+        exec /bin/bash
+    fi
+
+%labels
+    crboost.tool warp_aretomo
+    crboost.def warp-2.0.0dev41_aretomo2-1.0.0_torch-2.13_cuda12.9_ubuntu24.04
+    org.opencontainers.image.title WarpTools, M, AreTomo2
+    org.opencontainers.image.version 2.0.0dev41 (AreTomo2 1.0.0, PyTorch 2.13.0)
+    org.opencontainers.image.source https://github.com/Klumpe-lab/crboost_server
+    org.opencontainers.image.licenses GPL-3.0 (Warp); AreTomo2, conda-forge and warpem packages under their own
+
+%help
+    WarpTools 2.0.0dev41 with M (MTools, MCore) and AreTomo2 v1.0.0 (built for sm_52-sm_100 + compute_100 PTX), with
+    the PyTorch 2.13.0 that Warp's LibTorchSharp was built against, on Ubuntu 24.04.
+    Usage:
+      apptainer exec --nv <image>.sif WarpTools --help
+      apptainer exec --nv <image>.sif MCore --help
+      apptainer exec --nv <image>.sif AreTomo2
+    CUDA 12.9 needs a recent host NVIDIA driver; a driver/forward-compat error on the first run means the GPU node's
+    driver is too old.

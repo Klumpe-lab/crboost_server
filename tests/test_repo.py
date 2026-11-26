@@ -145,3 +145,96 @@ def test_app_builds(tmp_path):
     assert {"/static", "/api/vis-asset"} <= set(built["paths"]), built
     assert {"/", "/workspace", "/p/{project}/{view}"} <= set(built["pages"]), built
     assert built["tools"] == 200, built
+
+
+# --- Container recipes (roadmap 63 D17, D19) -------------------------------------------------------------------------
+
+DEFS = REPO / "container_defs"
+UBUNTU_2404 = "ubuntu@sha256:562111b88caa79c71391c0c4d3c2114a7d5c35915c20561fd893cb1e07929e6b"
+CUDA_DEVEL_2404 = "nvidia/cuda@sha256:020bc241a628776338f4d4053fed4c38f6f7f3d7eb5919fecb8de313bb8ba47c"
+# Images the curation worker starts with a bare command: no `tools:` entry names them.
+VIEWER_IMAGES = {"napari", "chimerax"}
+# Recipes of images that still run somewhere and were built before D19. Each goes when its image is replaced by one
+# built from a def that follows it; the list only shrinks.
+OLD_RECIPES = {
+    "chimerax_artiax_GL",
+    "cryocare",
+    "isonet2-a266ff4_torch-2.8.0_cuda12.9_sm100",
+    "miss_alignment_torch2.8.0_cuda12.9",
+    "napari_GL",
+    "pytom-match-pick-0.14.0_cupy-13.6.0_cuda12.9_sm100",
+    "relion-5.0.1-b16a35b_torch-2.8.0_cuda12.9_sm100",
+    "tilt_filter_torch2.8.0_cuda12.8",
+    "warp-2.0.0dev41_aretomo2-1.0.0_torch2.13_cuda12.9_sm100",
+}
+# What no recipe does: a TLS check turned off, a moving download, Anaconda's channels, apt outside apt_install (which
+# makes it work under any fakeroot), wget (downloads go through fetch, which checks a sha256, or a lock).
+FORBIDDEN = {
+    "--no-check-certificate": "a TLS check turned off: a site's CA goes in through CRBOOST_BUILD_CA",
+    "ssl_verify": "a TLS check turned off: a site's CA goes in through CRBOOST_BUILD_CA",
+    "sslVerify": "a TLS check turned off: a site's CA goes in through CRBOOST_BUILD_CA",
+    "/latest/": "a moving download: pin the version and check its sha256 (fetch)",
+    "repo.anaconda.com": "Anaconda's channels and terms: Miniforge, conda-forge only (install_miniforge)",
+    "Miniconda": "Anaconda's installer and terms: Miniforge (install_miniforge)",
+    "apt-get install": "apt outside apt_install, which works under a root-only fakeroot",
+    "wget ": "a download without a checked hash: fetch <url> <sha256> <file>",
+}
+
+
+def _new_recipes() -> list[Path]:
+    return sorted(d for d in DEFS.glob("*.def") if d.stem not in OLD_RECIPES)
+
+
+def test_old_recipes_exist():
+    """The allow-list names only defs that are there, so a replaced image's old recipe leaves it with the def."""
+    missing = sorted(name for name in OLD_RECIPES if not (DEFS / f"{name}.def").exists())
+    assert not missing, f"OLD_RECIPES names defs that are gone, take them out: {missing}"
+
+
+@pytest.mark.parametrize("def_path", _new_recipes(), ids=lambda p: p.stem)
+def test_every_def_follows_the_recipe(def_path):
+    text = def_path.read_text()
+    name = def_path.stem
+    assert name.endswith("_ubuntu24.04"), f"{name}: an image built on D17's base says so in its name"
+    stages = re.findall(r"^Bootstrap:", text, re.M)
+    bases = re.findall(r"^From:\s*(\S+)", text, re.M)
+    assert len(bases) == len(stages) >= 1, f"{name}: one From per stage"
+    assert bases[-1] == UBUNTU_2404, f"{name}: the image ends on ubuntu:24.04 by digest, not {bases[-1]}"
+    assert all(b in (UBUNTU_2404, CUDA_DEVEL_2404) for b in bases[:-1]), f"{name}: a build stage on {bases[:-1]}"
+    for marker, field in (
+        ("build_env.sh /opt/crboost/build_env.sh", "%files"),
+        (". /opt/crboost/build_env.sh", "%post"),
+    ):
+        assert text.count(marker) == len(stages), f"{name}: every stage has `{marker}` in its {field}"
+    # What the recipe does, without its comments (which may well name what it no longer does).
+    code = "\n".join(line for line in text.splitlines() if not line.lstrip().startswith("#"))
+    for word, why in FORBIDDEN.items():
+        assert word not in code, f"{name}: `{word}`: {why}"
+    for ref in re.findall(r"git checkout (\S+)", code):
+        assert re.fullmatch(r"[0-9a-f]{40}", ref), f"{name}: git checkout {ref}: a source is checked out by commit"
+    for source in re.findall(r"^%files\s*\n((?:[ \t]+\S.*\n)+)", text, re.M):
+        for line in source.splitlines():
+            src = line.split()[0]
+            assert (DEFS / src).exists(), f"{name}: %files names {src}, which is not in container_defs/"
+    labels = dict(re.findall(r"^\s+(crboost\.\w+)\s+(\S+)", text, re.M))
+    assert labels.get("crboost.def") == name, f"{name}: %labels crboost.def {name}"
+    tools = {*config_service.get_config_service().config.tools, *VIEWER_IMAGES}
+    assert labels.get("crboost.tool") in tools, f"{name}: %labels crboost.tool names a tool of the conf template"
+
+
+@pytest.mark.repo
+def test_apt_reads_a_dated_snapshot():
+    """apt_install reads Ubuntu's archive of one date (roadmap 63 S7): a rebuild gets the packages the image had."""
+    build_env = (DEFS / "build_env.sh").read_text()
+    date = re.search(r"^APT_SNAPSHOT=(\d{8}T\d{6}Z)$", build_env, re.M)
+    assert date, "build_env.sh names APT_SNAPSHOT as a snapshot.ubuntu.com moment"
+    assert 'APT::Snapshot \\"$APT_SNAPSHOT\\"' in build_env
+
+
+def test_images_build_with_crboosts_uv():
+    """An image's uv (build_env.sh's install_uv) is the one uv.toml pins for crboost's own environment."""
+    pinned = re.search(r'required-version = "==([\d.]+)"', (REPO / "uv.toml").read_text()).group(1)
+    pinned_sum = re.search(r'sha256 = "([0-9a-f]{64})"', (REPO / "uv.toml").read_text()).group(1)
+    build_env = (DEFS / "build_env.sh").read_text()
+    assert f"/releases/download/{pinned}/uv-x86_64-unknown-linux-gnu.tar.gz" in build_env, pinned
+    assert pinned_sum in build_env, pinned_sum

@@ -1,0 +1,158 @@
+Bootstrap: docker
+From: ubuntu@sha256:562111b88caa79c71391c0c4d3c2114a7d5c35915c20561fd893cb1e07929e6b
+# ubuntu:24.04 on 2026-11-25, by digest (Apptainer takes a tag or a digest, not both). Roadmap 63 D17.
+
+# easymode 1.2.5 + Ais 1.2.38 + Pom 1.2.1, one Python environment (Python 3.10, TF 2.11.0, CUDA 11.2 and cuDNN 8.1 from
+# conda-forge), on plain Ubuntu 24.04. easymode declares ais-cryoet and pom-cryoet as dependencies (it shells out to
+# `ais segment` and `ais pick`), so the three ship and are pinned together:
+#   easymode segment / pick / list / download   (headless, batch)
+#   ais segment / pick / train                  (headless; ais alone is the GUI and needs X)
+#   pom summarize / projections / render        (headless; render via EGL)
+# The environment of the image the lab runs (easymode_1.2.5.sif, built from the lab share's easymode_1.2.5.def on
+# NVIDIA's CUDA 11.2 devel base, which it never used: TF loads the environment's CUDA), installed from the locks
+# exported from it: conda packages by URL and md5, pip ones by version and sha256. Ais, Pom and a few older pins
+# ship as sources only; they are pure Python and build without a compiler. No TF release carries Blackwell code: on
+# a B200 its kernels compile from PTX at first use (the conf's gpu_kernel_cache keeps them).
+#
+# Model weights are NOT in the image. They live in a host directory bound at /opt/easymode_cache, filled once with
+# `easymode download --all` (HF_HUB_OFFLINE=0) and then made read-only. HF_HUB_OFFLINE=1 is the default so a run never
+# pulls newer weights: easymode re-downloads whenever the Hugging Face timestamp is newer than the cached one, and the
+# hosted weights have been replaced in place before.
+# Host directories bound at run time:
+#   /opt/easymode_cache  easymode settings.txt, models/ (weights), hf/ (HF cache)
+#   /opt/ais_cache       Ais settings, feature library, logs (writable)
+
+%files
+    build_env.sh /opt/crboost/build_env.sh
+    easymode-1.2.5_tensorflow-2.11_cuda11.2_ubuntu24.04.conda.lock /opt/locks/conda.lock
+    easymode-1.2.5_tensorflow-2.11_cuda11.2_ubuntu24.04.pip.lock /opt/locks/pip.lock
+
+%environment
+    export PYTHONNOUSERSITE=1
+    export PYTHONPATH=""
+    export PYTHONHOME=""
+    export PATH="/opt/miniforge3/envs/easymode/bin:/opt/miniforge3/bin:$PATH"
+    export LD_LIBRARY_PATH="/opt/miniforge3/envs/easymode/lib:$LD_LIBRARY_PATH"
+    export EASYMODE_CACHE_DIR="${EASYMODE_CACHE_DIR:-/opt/easymode_cache}"
+    export AIS_CONFIG_DIR="${AIS_CONFIG_DIR:-/opt/ais_cache}"
+    export HF_HOME="${HF_HOME:-/opt/easymode_cache/hf}"
+    export HF_HUB_OFFLINE="${HF_HUB_OFFLINE:-1}"
+    export MPLCONFIGDIR="${MPLCONFIGDIR:-/tmp/mpl-$$}"
+    export TF_CPP_MIN_LOG_LEVEL=3
+    export OMP_NUM_THREADS="${OMP_NUM_THREADS:-1}"
+
+%post
+    set -e
+    . /opt/crboost/build_env.sh
+    # GL/EGL and X client libraries: Ais imports OpenGL at start-up (even for the CLI) and its GUI runs on glfw; Pom
+    # renders headless through EGL. 24.04's glibc 2.39 also loads the GL libraries an EL10 host brings in with --nv.
+    apt_install ca-certificates curl \
+        libgl1 libglx-mesa0 libgl1-mesa-dri libegl1 libgles2 libglvnd0 \
+        libglib2.0-0t64 libsm6 libxext6 libxrender1 \
+        libxrandr2 libxinerama1 libxcursor1 libxi6 libxxf86vm1 libx11-6 \
+        xclip
+    install_miniforge
+
+    conda create -n easymode -y --file /opt/locks/conda.lock
+    P=/opt/miniforge3/envs/easymode/bin/python
+    $P -m pip install --no-cache-dir --no-deps --require-hashes -r /opt/locks/pip.lock
+    conda clean --all -y
+    mkdir -p /opt/easymode_cache /opt/ais_cache
+
+    # easymode: settings and weights under $EASYMODE_CACHE_DIR (weights in its models/ subdirectory, so they can be
+    # made read-only while settings.txt stays writable). Fails the build if upstream moved.
+    $P - <<'PYEOF'
+import sys, importlib.util
+CFG = importlib.util.find_spec("easymode.core.config").origin
+src = open(CFG).read()
+old_settings = 'settings_path = os.path.join(os.path.expanduser("~"), "easymode", "settings.txt")'
+old_cond = 'if sdict["MODEL_DIRECTORY"] == "" or not os.path.exists(sdict["MODEL_DIRECTORY"]):'
+old_dir = 'sdict["MODEL_DIRECTORY"] = os.path.join(os.path.expanduser("~"), "easymode")'
+for marker, name in [(old_settings, "settings_path"), (old_cond, "MODEL_DIRECTORY conditional"), (old_dir, "MODEL_DIRECTORY default")]:
+    if marker not in src:
+        sys.exit(f"PATCH FAILURE: {name!r} not found in {CFG} -- easymode upstream changed; update the patch.")
+src = src.replace(old_settings,
+    '_easymode_home = os.environ.get("EASYMODE_CACHE_DIR") or os.path.join(os.path.expanduser("~"), "easymode")\n'
+    'settings_path = os.path.join(_easymode_home, "settings.txt")')
+src = src.replace(old_cond,
+    'if os.environ.get("EASYMODE_CACHE_DIR") or sdict["MODEL_DIRECTORY"] == "" or not os.path.exists(sdict["MODEL_DIRECTORY"]):')
+src = src.replace(old_dir,
+    'sdict["MODEL_DIRECTORY"] = os.path.join(_easymode_home, "models") if os.environ.get("EASYMODE_CACHE_DIR") else _easymode_home')
+open(CFG, "w").write(src)
+print(f"PATCHED easymode: {CFG}")
+PYEOF
+
+    # Ais: settings, feature library and log under $AIS_CONFIG_DIR.
+    $P - <<'PYEOF'
+import sys, importlib.util
+CFG = importlib.util.find_spec("Ais.core.config").origin
+src = open(CFG).read()
+old_paths = (
+    'log_path = os.path.join(os.path.expanduser("~"), ".Ais", "Ais.log")\n'
+    'settings_path = os.path.join(os.path.expanduser("~"), ".Ais", "settings.txt")\n'
+    'feature_lib_path = os.path.join(os.path.expanduser("~"), ".Ais", "feature_library.txt")'
+)
+new_paths = (
+    '_ais_home = os.environ.get("AIS_CONFIG_DIR") or os.path.join(os.path.expanduser("~"), ".Ais")\n'
+    'log_path = os.path.join(_ais_home, "Ais.log")\n'
+    'settings_path = os.path.join(_ais_home, "settings.txt")\n'
+    'feature_lib_path = os.path.join(_ais_home, "feature_library.txt")'
+)
+old_pom = 'edit_setting("POM_COMMAND_DIR", os.path.join(os.path.expanduser("~"), ".Ais"))'
+for marker, name in [(old_paths, "Ais paths block"), (old_pom, "POM_COMMAND_DIR default")]:
+    if marker not in src:
+        sys.exit(f"PATCH FAILURE: {name!r} not found in {CFG} -- Ais upstream changed; update the patch.")
+src = src.replace(old_paths, new_paths).replace(old_pom, 'edit_setting("POM_COMMAND_DIR", _ais_home)')
+open(CFG, "w").write(src)
+print(f"PATCHED Ais: {CFG}")
+PYEOF
+
+    # The CLIs on the default PATH (a direct call under --cleanenv finds them).
+    for b in easymode ais pom; do ln -sf /opt/miniforge3/envs/easymode/bin/$b /usr/local/bin/$b; done
+
+    # Verify here, not in %test: a failing %test does not fail an Apptainer build.
+    $P -m pip check
+    $P -c "import tensorflow as tf; assert tf.__version__ == '2.11.0', tf.__version__; assert tf.test.is_built_with_cuda()"
+    $P -c "import importlib.metadata as m; v = {p: m.version(p) for p in ('easymode', 'ais-cryoet', 'pom-cryoet')}; print(v); assert v == {'easymode': '1.2.5', 'ais-cryoet': '1.2.38', 'pom-cryoet': '1.2.1'}, v"
+    # TF finds the environment's CUDA 11.2 and cuDNN 8.1 libraries (no GPU needed to load them).
+    ldd_complete /opt/miniforge3/envs/easymode/lib/python3.10/site-packages/tensorflow/python/_pywrap_tensorflow_internal.so
+    test -e /opt/miniforge3/envs/easymode/lib/libcudnn.so.8 && test -e /opt/miniforge3/envs/easymode/lib/libcudart.so.11.0
+    mkdir -p /tmp/em_check/models /tmp/ais_check
+    EASYMODE_CACHE_DIR=/tmp/em_check AIS_CONFIG_DIR=/tmp/ais_check MPLCONFIGDIR=/tmp/mpl_check $P -c "
+import easymode.core.config as em, Ais.core.config as ais
+assert em.settings['MODEL_DIRECTORY'] == '/tmp/em_check/models', em.settings['MODEL_DIRECTORY']
+assert ais.settings_path == '/tmp/ais_check/settings.txt', ais.settings_path
+print('cache patches OK')
+"
+    EASYMODE_CACHE_DIR=/tmp/em_check AIS_CONFIG_DIR=/tmp/ais_check MPLCONFIGDIR=/tmp/mpl_check \
+        PATH="/opt/miniforge3/envs/easymode/bin:$PATH" /bin/sh -c 'easymode --help >/dev/null && ais --help >/dev/null && pom --help >/dev/null'
+    rm -rf /tmp/em_check /tmp/ais_check /tmp/mpl_check
+
+%runscript
+    if [ $# -gt 0 ]; then
+        exec "$@"
+    else
+        exec /bin/bash
+    fi
+
+%test
+    # The real checks run at the end of %post (a failing %test does not fail the build).
+    test -x /usr/local/bin/easymode
+
+%labels
+    crboost.tool easymode
+    crboost.def easymode-1.2.5_tensorflow-2.11_cuda11.2_ubuntu24.04
+    org.opencontainers.image.title easymode, Ais, Pom
+    org.opencontainers.image.version 1.2.5 (Ais 1.2.38, Pom 1.2.1)
+    org.opencontainers.image.source https://github.com/Klumpe-lab/crboost_server
+    org.opencontainers.image.licenses GPL-3.0 (easymode); Ais, Pom, conda-forge and PyPI packages under their own
+
+%help
+    easymode 1.2.5 + Ais 1.2.38 + Pom 1.2.1 (Python 3.10, TF 2.11, CUDA 11.2), on Ubuntu 24.04.
+    Bind two writable host directories:
+      -B <cache_and_artifacts>/easymode_1.2.5:/opt/easymode_cache
+      -B <cache_and_artifacts>/ais_1.2:/opt/ais_cache
+    Fill the weights once (network needed):
+      apptainer exec --env HF_HUB_OFFLINE=0 -B ... <image>.sif easymode download --all
+    Segment (offline by default):
+      apptainer exec --nv --cleanenv -B ... <image>.sif easymode segment membrane --data tomos/ --output segmented/

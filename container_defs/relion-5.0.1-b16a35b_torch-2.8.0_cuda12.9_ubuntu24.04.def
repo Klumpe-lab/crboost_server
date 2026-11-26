@@ -1,0 +1,153 @@
+Bootstrap: docker
+From: nvidia/cuda@sha256:020bc241a628776338f4d4053fed4c38f6f7f3d7eb5919fecb8de313bb8ba47c
+# nvidia/cuda:12.9.1-devel-ubuntu24.04 on 2026-11-25, by digest (Apptainer takes a tag or a digest, not both).
+Stage: build
+
+# RELION 5.0.1 (ver5.0 at commit b16a35b) with torch 2.8.0+cu129, in two stages (roadmap 63 D17, D19). RELION compiles
+# here, on NVIDIA's CUDA devel base, and is `make install`ed into /opt/relion-5.0; the image itself is plain Ubuntu
+# 24.04 with that install, the Python environment and the one CUDA library RELION loads (libcufft; cudart is linked in
+# statically). No toolkit, nsight, source or build tree ships, and no NVIDIA base: its container licence is what kept
+# the image from being published (roadmap 63 S7, recon C07).
+# The environment is that of the image the lab runs (relion-5.0.1-b16a35b_torch-2.8.0_cuda12.9_sm100.def), installed
+# from the locks exported from it: conda packages by URL and md5, pip ones by version, the five RELION companions
+# from git at the commits that image built (its def named none).
+
+%files
+    build_env.sh /opt/crboost/build_env.sh
+    relion-5.0.1-b16a35b_torch-2.8.0_cuda12.9_ubuntu24.04.conda.lock /opt/locks/conda.lock
+    relion-5.0.1-b16a35b_torch-2.8.0_cuda12.9_ubuntu24.04.pip.lock /opt/locks/pip.lock
+
+%post
+    set -e
+    . /opt/crboost/build_env.sh
+    # munge (the daemon) is left out: its postinst runs `su munge`, impossible under a root-only fakeroot, and crboost
+    # runs RELION's mpirun inside the container without Slurm. libmunge-dev stays.
+    apt_install \
+        build-essential gcc-12 g++-12 cmake git curl ca-certificates \
+        libfftw3-dev libtiff-dev openmpi-bin libopenmpi-dev libpng-dev \
+        libx11-dev libxft-dev libxext-dev libglu1-mesa-dev libmunge-dev
+    # CUDA 12.9's libcu++ uses GCC 13's __remove_reference builtin in function signatures, which GCC 13 rejects
+    # (Ubuntu 24.04's default compiler): RELION and FLTK compile with GCC 12 (the 22.04 images were built with GCC 11).
+    export CC=gcc-12 CXX=g++-12 CUDAHOSTCXX=g++-12
+    install_miniforge
+    conda create -n relion-5.0 -y --file /opt/locks/conda.lock
+    P=/opt/miniforge3/envs/relion-5.0/bin/python
+    $P -m pip install --no-cache-dir --no-deps --extra-index-url https://download.pytorch.org/whl/cu129 \
+        -r /opt/locks/pip.lock
+
+    mkdir -p /opt/src
+    git clone https://github.com/3dem/relion.git /opt/src/relion
+    cd /opt/src/relion
+    git checkout b16a35b0038336e6631b7a97b922f8c629b0b6f7
+    # RELION's own Python package (the tomography programs), as its environment.yml installs it (".[vis]").
+    $P -m pip install --no-cache-dir --no-deps ".[vis]"
+
+    # RELION's CMake takes a single -arch; replace its sm_50 fallback with the full list.
+    GENCODE=""
+    for a in 50 60 61 70 75 80 86 89 90 100; do GENCODE="$GENCODE -gencode=arch=compute_$a,code=sm_$a"; done
+    GENCODE="$GENCODE -gencode=arch=compute_100,code=compute_100"
+    sed -i "s|set(CUDARCH \"-arch=sm_50\")|set(CUDARCH \"$GENCODE\")|" CMakeLists.txt
+    grep -q 'code=compute_100' CMakeLists.txt
+    # Its own folder: pip's wheel build above leaves a build/ in the source tree.
+    mkdir /opt/src/relion-build
+    cd /opt/src/relion-build
+    cmake \
+        -DCMAKE_INSTALL_PREFIX=/opt/relion-5.0 \
+        -DENABLE_MPI=ON \
+        -DCUDA_TOOLKIT_ROOT_DIR=/usr/local/cuda-12.9 \
+        -DCUDA_HOST_COMPILER=/usr/bin/g++-12 \
+        -DGUI=ON \
+        -DENABLE_TOMO_NEW=ON \
+        -DPYTHON_EXE_PATH=$P \
+        -DFETCH_WEIGHTS=OFF \
+        /opt/src/relion
+    make -j$(nproc)
+    make install
+
+    # The one CUDA library RELION loads, the cufft it was linked against (cudart is linked in statically).
+    cp -a /usr/local/cuda-12.9/targets/x86_64-linux/lib/libcufft.so.11* /opt/relion-5.0/lib/
+    # make install brings FLTK whole; RELION's programs load libfltk alone. Its GL, forms and images libraries and
+    # the static archives go (the GL one would need libGL).
+    rm -f /opt/relion-5.0/lib/libfltk_*.so* /opt/relion-5.0/lib/libfltk*.a
+
+    # Verify here, not in %test: a failing %test does not fail an Apptainer build.
+    # Every program the build made is installed.
+    for f in /opt/src/relion-build/bin/*; do test -e "/opt/relion-5.0/bin/$(basename "$f")" || { echo "not installed: $f"; exit 1; }; done
+    # RELION's GPU code is linked into every binary: it must carry Blackwell SASS and PTX (cuobjdump is only here).
+    cuobjdump --list-elf /opt/relion-5.0/bin/relion_refine | grep -q sm_100
+    cuobjdump --list-ptx /opt/relion-5.0/bin/relion_refine | grep -q sm_100
+    conda clean --all -y
+
+Bootstrap: docker
+From: ubuntu@sha256:562111b88caa79c71391c0c4d3c2114a7d5c35915c20561fd893cb1e07929e6b
+# ubuntu:24.04 on 2026-11-25, by digest.
+Stage: final
+
+%files
+    build_env.sh /opt/crboost/build_env.sh
+
+%files from build
+    /opt/relion-5.0
+    /opt/miniforge3
+
+%environment
+    export PYTHONNOUSERSITE=1
+    export RELION_HOME=/opt/relion-5.0
+    export CONDA_ENV_PATH=/opt/miniforge3/envs/relion-5.0
+    export PATH="$CONDA_ENV_PATH/bin:/opt/miniforge3/bin:$RELION_HOME/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+    export LD_LIBRARY_PATH="$CONDA_ENV_PATH/lib:$RELION_HOME/lib:$LD_LIBRARY_PATH"
+    export QT_X11_NO_MITSHM=1
+    export QT_GRAPHICSSYSTEM="native"
+    export DISPLAY=${DISPLAY:-:0.0}
+    # OpenMPI's hwloc probing PCI devices and X displays hangs on some sites' GPU nodes (Munich, 2026-11-25). crboost's
+    # mpirun runs on one node with --bind-to none, so the topology those probes add is never used (roadmap 63 D21).
+    export HWLOC_COMPONENTS="-linuxio,-pci,-gl"
+
+%post
+    set -e
+    . /opt/crboost/build_env.sh
+    # The run-time halves of the build stage's -dev packages (24.04's 64-bit time_t names: t64).
+    apt_install \
+        ca-certificates libfftw3-single3 libfftw3-double3 libtiff6 openmpi-bin libopenmpi3t64 libpng16-16t64 \
+        libx11-6 libxft2 libxext6 libglu1-mesa libmunge2 csh tcsh
+
+    # Verify here, not in %test: a failing %test does not fail an Apptainer build.
+    export PATH="/opt/miniforge3/envs/relion-5.0/bin:/opt/relion-5.0/bin:$PATH"
+    export LD_LIBRARY_PATH="/opt/miniforge3/envs/relion-5.0/lib:/opt/relion-5.0/lib"
+    test ! -e /usr/local/cuda
+    # Every library every RELION program loads is in the image.
+    ldd_complete /opt/relion-5.0/bin/* /opt/relion-5.0/lib/*.so*
+    relion_refine --version
+    command -v mpirun relion_refine_mpi
+    # mpirun starts ranks on one node as crboost starts them (as root only here, in the build).
+    HWLOC_COMPONENTS="-linuxio,-pci,-gl" timeout 120 mpirun --allow-run-as-root --oversubscribe --bind-to none -n 2 true
+    P=/opt/miniforge3/envs/relion-5.0/bin/python
+    $P -m pip check
+    $P -c "import starfile, mrcfile, tomography_python_programs"
+    # get_arch_list() is [] without a GPU; the compiled-in flags are not.
+    $P -c "import torch; a = torch._C._cuda_getArchFlags(); print(torch.__version__, a); assert 'sm_100' in a, a"
+
+%runscript
+    if [ $# -gt 0 ]; then
+        exec "$@"
+    else
+        exec /bin/bash
+    fi
+
+%test
+    # The real checks run at the end of %post (a failing %test does not fail the build).
+    /opt/relion-5.0/bin/relion_refine --version
+
+%labels
+    crboost.tool relion
+    crboost.def relion-5.0.1-b16a35b_torch-2.8.0_cuda12.9_ubuntu24.04
+    org.opencontainers.image.title RELION
+    org.opencontainers.image.version 5.0.1-b16a35b
+    org.opencontainers.image.source https://github.com/Klumpe-lab/crboost_server
+    org.opencontainers.image.licenses GPL-2.0 (RELION); libcufft under the CUDA EULA; packages under their own
+
+%help
+    RELION 5.0.1 (commit b16a35b), GPU code for sm_50-sm_100 + compute_100 PTX, OpenMPI for one node, the Python
+    tomography programs and torch 2.8.0+cu129 (Blush, class ranker, DynaMight, ModelAngelo), on Ubuntu 24.04.
+    Usage:
+      apptainer exec --nv <image>.sif relion_refine --version

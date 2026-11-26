@@ -1,0 +1,73 @@
+Bootstrap: docker
+From: ubuntu@sha256:562111b88caa79c71391c0c4d3c2114a7d5c35915c20561fd893cb1e07929e6b
+# ubuntu:24.04 on 2026-11-25, by digest (Apptainer takes a tag or a digest, not both). Roadmap 63 D17.
+
+# IsoNet2 at commit a266ff4 with torch 2.8.0+cu129, on plain Ubuntu 24.04. The environment of the image the lab runs
+# (isonet2-a266ff4_torch-2.8.0_cuda12.9_sm100.def: upstream's isonet2_environment.yml with torch from the cu129 wheels,
+# conda-forge only), installed from the locks exported from it: conda packages by URL and md5, pip ones by version
+# (torch's +cu129 wheels are not on PyPI, so the pip lock carries no hashes). torch brings its own CUDA libraries; the
+# driver comes from the host through --nv. No NVIDIA base: nothing here compiles CUDA code.
+# IsoNet2 itself is not a package: it runs from its source, on PYTHONPATH, as upstream runs it.
+
+%files
+    build_env.sh /opt/crboost/build_env.sh
+    isonet2-a266ff4_torch-2.8.0_cuda12.9_ubuntu24.04.conda.lock /opt/locks/conda.lock
+    isonet2-a266ff4_torch-2.8.0_cuda12.9_ubuntu24.04.pip.lock /opt/locks/pip.lock
+
+%environment
+    export PYTHONNOUSERSITE=1
+    export ISONET_HOME=/opt/IsoNet2
+    export PATH="/opt/miniforge3/envs/isonet2/bin:$ISONET_HOME/IsoNet/bin:$PATH"
+    export PYTHONPATH="$ISONET_HOME"
+
+%post
+    set -e
+    . /opt/crboost/build_env.sh
+    apt_install ca-certificates curl git
+    install_miniforge
+
+    conda create -n isonet2 -y --file /opt/locks/conda.lock
+    P=/opt/miniforge3/envs/isonet2/bin/python
+    $P -m pip install --no-cache-dir --no-deps --extra-index-url https://download.pytorch.org/whl/cu129 \
+        -r /opt/locks/pip.lock
+    conda clean --all -y
+
+    git clone https://github.com/IsoNet-cryoET/IsoNet2.git /opt/IsoNet2
+    cd /opt/IsoNet2
+    git checkout a266ff498aeeb614d6a262829b30b3f1700cdf5b
+    rm -rf .git
+    chmod +x /opt/IsoNet2/IsoNet/bin/isonet.py
+
+    # Verify here, not in %test: a failing %test does not fail an Apptainer build.
+    # The running image has one conflict, kept with its packages: wheel (a build tool, never run here) wants a newer
+    # packaging. Any other fails the build.
+    $P -m pip check > /tmp/pip_check || true
+    if grep -v -x 'wheel 0.48.0 has requirement packaging>=24.0, but you have packaging 23.2.' /tmp/pip_check; then exit 1; fi
+    rm /tmp/pip_check
+    # get_arch_list() is [] without a GPU; the compiled-in flags are not.
+    $P -c "import torch; a = torch._C._cuda_getArchFlags(); print(torch.__version__, a); assert torch.__version__ == '2.8.0+cu129' and 'sm_100' in a, a"
+    $P -c "import pytorch_lightning, torchmetrics; print('pytorch_lightning', pytorch_lightning.__version__)"
+    PYTHONPATH=/opt/IsoNet2 $P /opt/IsoNet2/IsoNet/bin/isonet.py --help > /dev/null
+
+%test
+    # The real checks run at the end of %post (a failing %test does not fail the build).
+    isonet.py --help > /dev/null
+
+%runscript
+    if [ $# -eq 0 ]; then
+        exec isonet.py --help
+    else
+        exec isonet.py "$@"
+    fi
+
+%labels
+    crboost.tool isonet
+    crboost.def isonet2-a266ff4_torch-2.8.0_cuda12.9_ubuntu24.04
+    org.opencontainers.image.title IsoNet2
+    org.opencontainers.image.version a266ff4
+    org.opencontainers.image.source https://github.com/Klumpe-lab/crboost_server
+    org.opencontainers.image.licenses GPL-3.0 (IsoNet2); conda-forge and PyPI packages under their own
+
+%help
+    IsoNet2 (commit a266ff4) with torch 2.8.0+cu129 (sm_50-sm_120), on Ubuntu 24.04.
+    Use with: apptainer exec --nv <image>.sif isonet.py --help

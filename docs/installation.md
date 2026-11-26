@@ -56,35 +56,47 @@ version named in `uv.toml` (`required-version`) at `.uv/bin/uv`, or point `CRBOO
 
 ## 2. Get the containers
 
-Each tool runs from an Apptainer image (`.sif` file). Build the ones you want from `container_defs/` and put
-them in a folder on the shared filesystem, for example:
+Each tool runs from an Apptainer image (`.sif` file), which needs no root to run: x86-64, Apptainer 1.1 or newer, and
+for the GPU tools an NVIDIA driver for CUDA 12.9 (575 or newer; `./crboost test -m cluster` in step 5 shows whether
+yours runs them). Put the images in a folder on the shared filesystem and name each in `config/conf.yaml` (step 3).
 
-```bash
-apptainer build --fakeroot --nv /groups/<your_group>/software/containers/warp_aretomo.sif \
-    container_defs/warp_2.0.0dev41_aretomo1.0.0_cuda12.9.def
-```
-
-You need at least `warp_aretomo` and `relion`; the rest only for the jobs that use them.
+**Get the images, do not build them.** They are built once from `container_defs/` and handed out as files, so every
+site runs the same image; ask the maintainers for the current set until they are published. You need at least
+`warp_aretomo` and `relion`; the rest only for the jobs that use them.
 
 <details>
 <summary>Which tool is which</summary>
 
-| Name in `conf.yaml` | Used for | Build from `container_defs/` |
+| Name in `conf.yaml` | Used for | Image (`container_defs/<name>.def`) |
 |---|---|---|
-| `warp_aretomo` | **required:** motion/CTF, alignment, reconstruction, particle export | `warp_2.0.0dev41_aretomo1.0.0_cuda12.9.def` |
-| `relion` | **required:** extraction, averaging, Class3D, Refine3D, templates/masks | `relion5.0_tomo.def` |
-| `pytom` | template matching | `pytom_match_pick_0.10.0.def` |
-| `cryocare` | cryoCARE denoising | `cryocare.def` |
-| `isonet` | IsoNet2 denoising | `isonet2.def` |
-| `easymode` | segmentation | not in the repo yet |
-| `imod` | pick viewer utilities | `imod.def` |
-| `pymol` | templates from a PDB/mmCIF model | `pymol.def` |
-| `miss_alignment` | alignment refinement | `miss_alignment_torch2.8.0_cuda12.9.def` |
-| `tilt_filter` | the DL tilt filter's network (GPU) | `tilt_filter_torch2.8.0_cuda12.8.def` |
+| `warp_aretomo` | **required:** motion/CTF, alignment, reconstruction, particle export, M | `warp-2.0.0dev41_aretomo2-1.0.0_torch-2.13_cuda12.9_ubuntu24.04` |
+| `relion` | **required:** extraction, averaging, Class3D, Refine3D, templates/masks | `relion-5.0.1-b16a35b_torch-2.8.0_cuda12.9_ubuntu24.04` |
+| `pytom` | template matching | `pytom-match-pick-0.14.0_cupy-13.6.0_cuda12.9_ubuntu24.04` |
+| `cryocare` | cryoCARE denoising | `cryocare-0.3.0_tensorflow-2.4_cuda11.0_ubuntu24.04` |
+| `isonet` | IsoNet2 denoising | `isonet2-a266ff4_torch-2.8.0_cuda12.9_ubuntu24.04` |
+| `easymode` | segmentation | `easymode-1.2.5_tensorflow-2.11_cuda11.2_ubuntu24.04` |
+| `miss_alignment` | alignment refinement; the Warp-geometry bridge | `miss_alignment-0.2.0_torch-2.8.0_cuda12.9_ubuntu24.04` |
+| `tilt_filter` | the DL tilt filter's network (GPU) | `tilt_filter-torch-2.8.0_cuda12.8_ubuntu24.04` |
 | `cistem` | template simulation; a normal cisTEM install, not a container | — |
 
-`--fakeroot` must be allowed on your machine; if it isn't, build where you have root and copy the `.sif`
-over. ChimeraX/ArtiaX manual picking (`chimerax_artiax_GL.def`) is set up separately under `curation:`.
+ChimeraX/ArtiaX manual picking (`chimerax_artiax_GL.def`, under `curation:`) and the napari viewer
+(`napari-0.10.0_pyqt6_virtualgl-3.1.4_ubuntu24.04`) are set up separately. ChimeraX's licence does not allow us to
+hand out its image: build it yourself.
+
+</details>
+
+<details>
+<summary>If you must build an image</summary>
+
+```bash
+container_defs/build.sh <name> /groups/<your_group>/software/containers
+```
+
+No root needed where the host lets users make user namespaces; `build.sh` adds the fakeroot flags that work with or
+without a subuid range for you, and checks every download against your host's CA bundle. Behind a proxy that
+inspects TLS, name the bundle that holds the proxy's CA with `CRBOOST_BUILD_CA=/etc/pki/tls/certs/ca-bundle.crt`
+(never turn certificate checks off). Builds take minutes to a
+quarter of an hour and up to 40 GB in `APPTAINER_TMPDIR`. Details: `container_defs/README.md`.
 
 </details>
 
