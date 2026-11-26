@@ -70,7 +70,7 @@ _ROWS = (
     ("Alignment", JobStatus.SUCCEEDED, "job004", "12/12", "copia"),
     ("Reconstruct", JobStatus.RUNNING, "job024", "7/12", "copia"),
     ("Denoise Train", JobStatus.QUEUED, "job025", "", "copia"),
-    ("Template Match", JobStatus.FAILED, "job026", "3/12", "412"),
+    ("Template Match", JobStatus.FAILED, "job026", "3/12", "capsid"),
     ("Pick candidates", JobStatus.UNKNOWN, "", "", ""),
 )
 

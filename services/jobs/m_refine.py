@@ -174,7 +174,7 @@ class MRefineParams(AbstractJobParams):
         description="Bring this job's species into the population, from a Refine 3D and a Mask job as a first round "
         "makes one, and run the round on every species. M fits each tilt series' warps, defocus and the rest from "
         "all of them at once: an abundant species (the ribosome, hundreds a tilt series) steadies a sparse one in "
-        "the same tilt series (the capsid, one or two). The species must not be in the population yet, and its half "
+        "the same tilt series (a capsid, one or two). The species must not be in the population yet, and its half "
         "maps must be at the population's pixel size",
         title="Add this job's species",
         json_schema_extra=form("Round"),
@@ -207,7 +207,7 @@ class MRefineParams(AbstractJobParams):
         default=0.0,
         ge=0,
         description="The particle's diameter (create_species -d). M sizes its species' box from it, twice the "
-        "diameter in pixels, and crops nothing: the capsid's 600 Å at 1.55 Å is a 774 px box",
+        "diameter in pixels, and crops nothing: a 600 Å particle at 1.55 Å is a 774 px box",
         title="Diameter",
         json_schema_extra=form(SPECIES_GROUP, S, "Å"),
     )

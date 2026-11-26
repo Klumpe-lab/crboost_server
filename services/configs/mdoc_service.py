@@ -79,7 +79,7 @@ _UNSAFE_NAME_CHARS = re.compile(r"[^A-Za-z0-9_-]+")
 
 
 def folder_tag(folder) -> str:
-    """`folder`'s name as a series-name prefix (`20260820_B1G4_sample`), every run of
+    """`folder`'s name as a series-name prefix (`20260820_grid4_sample`), every run of
     characters outside `[A-Za-z0-9_-]` (spaces, dots) turned into one `_`."""
     return _UNSAFE_NAME_CHARS.sub("_", Path(folder).name)
 

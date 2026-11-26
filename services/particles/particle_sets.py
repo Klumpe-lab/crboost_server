@@ -427,7 +427,7 @@ def pool_scope(pset: ParticleSet) -> tuple[list[str], list[str]]:
 
 def set_lineage(pset: ParticleSet) -> str:
     """Where a set came from, in one line: for a kitchen set its subsets, kitchen and group, then what it holds
-    and from how many projects ("class 1 (<species> · classes) · 1,102 picks · 5 projects")."""
+    and from how many projects ("class 1 (capsid · classes) · 1,102 picks · 5 projects")."""
     count = f"{pset.n_particles:,} {'picks' if reads_by_facets(pset) else pset.level.value}"
     if pset.recipe.op != SetOp.POOL:
         return f"{pset.recipe.describe()} · {count}"

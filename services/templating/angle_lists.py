@@ -14,12 +14,12 @@ independent: the increment sets how finely orientations are sampled, the group h
 needed.
 
 What must match the template. The group's axes: I1 is scipy's icosahedral setting, I2 the same turned 90° about z
-(RELION's two settings); D, T and O are scipy's (n-fold on z). The side: symmetry composes on the right, R·S, which
-P9 measured with pytom's own rotation on the capsid template. Euler angles are pytom's anti-clockwise ZXZ in radians,
+(RELION's two settings); D, T and O are scipy's (n-fold on z). The side: symmetry composes on the right, R·S, as
+pytom's own rotation of an icosahedral template showed. Euler angles are pytom's anti-clockwise ZXZ in radians,
 scipy's intrinsic "ZXZ".
 
 The list depends only on (group, increment); each job writes its own copy, which records what it searched.
-P9 (roadmap 45 §11) checked these lists against pytom's on the capsid data: 148, 578 and 2,124 rotations at 12°, 8°
+Checked against pytom's own lists for an icosahedral template: 148, 578 and 2,124 rotations at 12°, 8°
 and 5° for I.
 """
 

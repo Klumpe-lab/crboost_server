@@ -155,7 +155,7 @@ class TemplateMatchPytomParams(AbstractJobParams):
         title="Tomograms / lane",
         json_schema_extra=form("GPUs", S),
     )
-    # 16: a whole tomogram takes ~2 min on a B200, so 140 of them take ~20 min (roadmap 43 D3).
+    # 16: a whole tomogram takes ~2 min on a B200, so 140 of them take ~20 min.
     array_throttle: int = Field(
         default=40,
         ge=1,

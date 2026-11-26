@@ -80,16 +80,16 @@ class FrameAlignParams(AbstractJobParams):
     max_shift_px: int = Field(
         default=30,
         ge=1,
-        description="Largest shift of a particle allowed, in tilt-image pixels (--r; RELION's default 20). On the "
-        "1.55 Å, 30: missAlign's warps on Grid2 reach 41 Å",
+        description="Largest shift of a particle allowed, in tilt-image pixels (--r; RELION's default 20). At 1.55 Å, "
+        "30 covers missAlign's warps, which reach 41 Å",
         title="Largest shift",
         json_schema_extra=form("Alignment", S, "px"),
     )
     iterations: int = Field(
         default=10000,
         ge=1,
-        description="Most optimiser iterations per tilt series (--it). The capsid's four large tilt series stopped at "
-        "10,000 without converging (roadmap 53 §15.10 T3)",
+        description="Most optimiser iterations per tilt series (--it). Four large tilt series stopped at "
+        "10,000 without converging",
         title="Iterations",
         json_schema_extra=form("Alignment", S),
     )
@@ -141,8 +141,8 @@ class FrameAlignParams(AbstractJobParams):
         default=1,
         ge=1,
         description="A tilt series with fewer particles keeps what it came with (its star, its particles' positions "
-        "and their trajectories); 1 = refine every one, as RELION does. On the capsid, keeping the eight tilt series "
-        "under 10 (17 capsids, whose fitted angles and shifts ran up to 6° and 81 Å) changed the map little (roadmap 53 §15.11)",
+        "and their trajectories); 1 = refine every one, as RELION does. Sparse tilt series fit loosely (angles and "
+        "shifts up to 6° and 81 Å were seen), and keeping them changed the map little",
         title="Fewest particles",
         json_schema_extra=form("Box & checks", S),
     )

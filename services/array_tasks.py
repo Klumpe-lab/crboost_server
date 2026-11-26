@@ -45,7 +45,7 @@ def shorten_ts_names(items: list[str]) -> dict[str, str]:
 
 
 def ts_pretty_name(raw_name: str) -> str:
-    """Human-friendly tomogram label: 'agg_..._Position_22_2' -> 'Pos 22 · Beam 2'.
+    """Human-friendly tomogram label: 'study_..._Position_22_2' -> 'Pos 22 · Beam 2'.
     Falls back to the raw name when there's no Position_{stage}[_{beam}] suffix."""
     parsed = parse_position(raw_name)
     if parsed is None:

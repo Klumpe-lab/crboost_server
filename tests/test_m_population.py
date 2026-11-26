@@ -1,7 +1,7 @@
 """M with several species, expansions and temporal samples (roadmap 73): the pure pieces, without M.
 
 The copies' layout is MTools expand_symmetry's own, read 2026-11-25 on a scratch copy of roadmap 73 S0's population
-(the capsid, I1 → C1: 105 particles → 6,300 rows, each particle's 60 copies one after another, every column the
+(a capsid, I1 → C1: 105 particles → 6,300 rows, each particle's 60 copies one after another, every column the
 parent's but the angles). `./crboost ci` runs it with the repo tests.
 """
 
