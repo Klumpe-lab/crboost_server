@@ -1,9 +1,12 @@
-"""`/dev/ideas`: every theme side by side, to choose a ground less glaring than white.
+"""`/dev/ideas`: the themes side by side, and moving grounds to keep around.
 
-Each board is a small workspace built from the app's own parts (the rail, the job roster, a job page with its
-Parameters, Results, a picture, stat tiles and the log well) under one theme: the board carries
-`data-cb-theme`, so the theme's values apply to what is inside it and nowhere else. A board's links open the
-real app in its theme for that page only (`?theme=<name>`); Use makes it the user's theme.
+The themes: each board is a small workspace built from the app's own parts (the rail, the job roster, a job page
+with its Parameters, Results, a picture, stat tiles and the log well) under one theme. The board carries
+`data-cb-theme`, so the theme's values apply to what is inside it and nowhere else. A board's links open the real
+app in its theme for that page only (`?theme=<name>`); Use makes it the user's theme.
+
+The moving grounds (`ui/dashboard/backdrops.py`) are ideas: each on a desk with a card over it, under any theme, at
+its own pace or eight times faster, and full screen.
 """
 
 from __future__ import annotations
@@ -17,6 +20,8 @@ from services.configs.user_settings import load_user_settings, save_user_setting
 from services.models_base import JobStatus
 from ui.components.buttons import house_button, icon_button
 from ui.components.check import house_check
+from ui.components.segmented import render_segmented
+from ui.dashboard.backdrops import Backdrop, backdrop, backdrop_css, backdrops
 from ui.dashboard.theme import THEMES, Theme, theme_block
 from ui.job_plugins._field_styles import (
     FIELD_LABEL_STYLE,
@@ -44,7 +49,7 @@ _NOISE = (
 )
 
 _CARD = (
-    "background: var(--cb-surface, #ffffff); background-image: var(--cb-card-art, none); "
+    "background: var(--cb-surface, #ffffff); "
     "border: 1px solid var(--cb-panel-line, #d6e0ea); border-radius: var(--cb-r-lg, 3px); "
     "display: flex; flex-direction: column; min-width: 0; overflow: hidden;"
 )
@@ -211,10 +216,90 @@ def _board(t: Theme, project: str | None, on_use) -> None:
             _job_page()
 
 
+# A moving ground's stage: the desk with its dot grid; full screen on a click of its corner button.
+_STAGE_CSS = """
+.cb-bd-stage { position: relative; height: 270px; overflow: hidden; border-radius: var(--cb-r-lg, 3px);
+    background: var(--cb-desk); background-image: var(--cb-desk-art); background-size: var(--cb-desk-art-size);
+    box-shadow: 0 0 0 1px rgba(15, 23, 42, 0.12); }
+.cb-bd-stage.cb-bd-full { position: fixed; inset: 0; height: auto; z-index: 6000; border-radius: 0; }
+/* The card's place is inline (it wins over a class), so full screen overrides it. */
+.cb-bd-stage.cb-bd-full .cb-bd-card { width: 360px !important; bottom: auto !important; top: 24px !important;
+    right: 24px !important; }
+"""
+
+
+def _mini_card() -> None:
+    with (
+        ui.element("div")
+        .classes("cb-bd-card")
+        .style(_CARD + " position: absolute; z-index: 1; top: 14px; right: 14px; bottom: 14px; width: 38%;")
+    ):
+        with ui.element("div").style(VIEW_HEAD_STYLE):
+            view_head_icon("layers")
+            ui.label("Jobs").style(VIEW_TITLE_STYLE)
+        for name, status, job, _count, _tag in _ROWS[:6]:
+            with ui.element("div").style(
+                "display: flex; align-items: center; gap: 6px; padding: 0 8px; height: 22px; "
+                "border-bottom: 1px solid var(--cb-line, #e4eaf1);"
+            ):
+                ui.html(_dot_html(status, size_px=7), sanitize=True)
+                ui.label(name).style(f"{SANS} font-size: 10.5px; color: var(--cb-ink-2, #1e293b); white-space: nowrap;")
+                ui.element("div").style("flex: 1;")
+                ui.label(job).style(f"{MONO} font-size: 8.5px; color: var(--cb-ink-4, #94a3b8);")
+
+
+def _ground(b: Backdrop) -> None:
+    with ui.element("div").style("display: flex; flex-direction: column; gap: 5px; min-width: 0;"):
+        with ui.element("div").style("display: flex; align-items: baseline; gap: 8px;"):
+            ui.label(b.label).style(PANEL_TITLE_STYLE + " color: var(--cb-ink-1, #12324f); white-space: nowrap;")
+            ui.label(b.note).style(f"{SANS} font-size: 10px; color: var(--cb-ink-3, #5b7089); min-width: 0;")
+        with ui.element("div").classes("cb-bd-stage") as stage:
+            backdrop(b.name)
+            _mini_card()
+            with ui.element("div").style("position: absolute; z-index: 2; left: 10px; bottom: 10px;"):
+                icon_button(
+                    "open_in_full", lambda: stage.classes(toggle="cb-bd-full"), tooltip="Full screen (again: back)"
+                )
+
+
+def _grounds() -> None:
+    segs = {}
+
+    def on_theme(name: str) -> None:
+        stages.props(f'data-cb-theme="{name}"')
+        segs["theme"].set_active(name)
+
+    def on_speed(k: str) -> None:
+        stages.style(f"--cb-bd-speed: {k};")
+        segs["speed"].set_active(k)
+
+    with ui.element("div").style("display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 10px;"):
+        ui.label("Moving grounds").style(PANEL_TITLE_STYLE + " font-size: 13px;")
+        ui.label("under").style(f"{SANS} font-size: 10.5px; color: var(--cb-ink-3);")
+        segs["theme"] = render_segmented([(n, t.label) for n, t in THEMES.items()], "light", on_theme)
+        ui.label("pace").style(f"{SANS} font-size: 10.5px; color: var(--cb-ink-3);")
+        segs["speed"] = render_segmented([("1", "its own"), ("8", "8× faster")], "1", on_speed)
+    ui.label(
+        "Slow backgrounds the browser draws, to keep around for the desk, an empty view or a page that waits. Only "
+        "transforms and opacity move (no repaint, nothing from the server); the ink is the theme's, so each follows "
+        "it. A system set to reduce motion stops them."
+    ).style(f"{SANS} font-size: 10.5px; color: var(--cb-ink-3); max-width: 900px;")
+    with (
+        ui.element("div")
+        .props('data-cb-theme="light"')
+        .style(
+            "display: grid; grid-template-columns: repeat(auto-fill, minmax(460px, 1fr)); gap: 16px 14px; "
+            "padding: 10px; border-radius: var(--cb-r-lg, 3px); background: var(--cb-desk);"
+        ) as stages
+    ):
+        for b in backdrops().values():
+            _ground(b)
+
+
 def render_theme_ideas() -> None:
     recent = get_prefs_service().prefs.recent_projects
     project = recent[0].path.rstrip("/").rsplit("/", 1)[-1] if recent else None
-    ui.add_head_html(f"<style>{''.join(theme_block(n) for n in THEMES)}</style>")
+    ui.add_head_html(f"<style>{''.join(theme_block(n) for n in THEMES)}{backdrop_css()}{_STAGE_CSS}</style>")
 
     async def use(name: str) -> None:
         settings = await asyncio.to_thread(load_user_settings)
@@ -227,21 +312,22 @@ def render_theme_ideas() -> None:
         ui.notify(f"Pages now open in {THEMES[name].label}.", type="positive")
 
     with ui.element("div").style(
-        "position: fixed; inset: 0; overflow-y: auto; background: var(--cb-desk); padding: 18px 22px 40px;"
+        "position: fixed; inset: 0; overflow-y: auto; background: var(--cb-desk); "
+        "background-image: var(--cb-desk-art); background-size: var(--cb-desk-art-size); padding: 18px 22px 40px;"
     ):
         with ui.element("div").style(
             "max-width: 1560px; margin: 0 auto; display: flex; flex-direction: column; gap: 14px;"
         ):
             with ui.element("div").style("display: flex; flex-direction: column; gap: 3px;"):
-                ui.label("Less white: theme ideas").style(PANEL_TITLE_STYLE + " font-size: 14px;")
+                ui.label("Less white: themes and moving grounds").style(PANEL_TITLE_STYLE + " font-size: 14px;")
                 ui.label(
-                    "The app's own parts under each theme. The structure is today's; only the grounds, rules and "
-                    "inks change. 'open … ↗' shows the real app in a theme for that page only; Use makes it the "
-                    "theme every page opens in (also in User settings, and the half-moon on the start page flips "
-                    "dark and light)."
+                    "The app's own parts under each theme, every desk with the dot grid. 'open … ↗' shows the real "
+                    "app in a theme for that page only; Use makes it the theme every page opens in (also the "
+                    "half-moon on the start page, and User settings)."
                 ).style(f"{SANS} font-size: 10.5px; color: var(--cb-ink-3); max-width: 900px;")
             with ui.element("div").style(
                 "display: grid; grid-template-columns: repeat(auto-fill, minmax(700px, 1fr)); gap: 14px;"
             ):
                 for t in THEMES.values():
                     _board(t, project, use)
+            _grounds()

@@ -226,8 +226,8 @@ def create_ui_router(backend: CryoBoostBackend):
         ensure_assets_loaded()
         render_napari_open_page(backend, volume)
 
-    # Every theme side by side, on the app's own parts (ui/theme_ideas.py). The page itself stays light: each board
-    # carries its theme.
+    # Every theme side by side, on the app's own parts, and the moving grounds (ui/theme_ideas.py). The page itself
+    # stays light: each board carries its theme.
     @ui.page("/dev/ideas", title="Theme ideas")
     async def theme_ideas_page(client: Client):
         await client.connected()
