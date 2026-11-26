@@ -16,6 +16,8 @@ from services.configs.user_settings import UserSettings, load_user_settings, sav
 from services.curation import napari_link
 from ui.components.buttons import house_button
 from ui.components.dialogs import dialog_host
+from ui.components.fields import house_select
+from ui.dashboard.theme import THEMES, switch_theme, theme_of
 from ui.job_plugins._field_styles import HELPER_STYLE, LABEL_VOICE, PANEL_TITLE_STYLE
 
 logger = logging.getLogger(__name__)
@@ -27,6 +29,10 @@ AGENTS_HELP = (
     "either way: agents can read every project, yours and others'. Lab-shared projects and other people's stay "
     "out of their reach. Deleting a project or emptying a Trash always waits for your approval on the agent's "
     "plan page."
+)
+THEME_HELP = (
+    "How every page looks. Dark is charcoal with pale ink; the papers are light looks on softer grounds than white "
+    "(side by side on /dev/ideas). Shown at once; Save keeps it. A page's address can try one for itself: ?theme=dusk."
 )
 DESKTOP_LABEL = "Start EisGreis with my remote desktop"
 DESKTOP_HELP = (
@@ -61,6 +67,29 @@ async def open_user_settings() -> None:
     ):
         ui.label("User settings").style(PANEL_TITLE_STYLE)
 
+        # The theme is shown as it is picked; closing without Save puts the page back in the one it had.
+        shown = {"theme": theme_of(getattr(ui.context.client, "_cb_theme", working.theme)).name, "saved": False}
+
+        def on_hide() -> None:
+            if not shown["saved"] and working.theme != shown["theme"]:
+                switch_theme(shown["theme"])
+
+        dialog.on("hide", on_hide)
+
+        def on_theme(e) -> None:
+            working.theme = theme_of(e.value).name
+            switch_theme(working.theme)
+
+        with ui.column().classes("w-full gap-1"):
+            house_select(
+                "Theme",
+                {n: t.label for n, t in THEMES.items()},
+                value=theme_of(working.theme).name,
+                on_change=on_theme,
+                width="w-32",
+            )
+            ui.label(THEME_HELP).style(f"{HELPER_STYLE} line-height: 1.45;")
+
         def on_agents(e) -> None:
             working.agents_may_edit_my_projects = bool(e.value)
 
@@ -88,6 +117,7 @@ async def open_user_settings() -> None:
                 if not res.get("success"):
                     ui.notify(f"EisGreis with the desktop: {res.get('error')}", type="negative", multi_line=True)
                     return
+            shown["saved"] = True
             dialog.close()
             state = "may now edit your projects" if working.agents_may_edit_my_projects else "edit only their own"
             with_desktop = "; EisGreis starts with your desktop" if desktop["on"] else ""
@@ -98,3 +128,17 @@ async def open_user_settings() -> None:
             house_button("Save", save, kind="accent")
 
     dialog.open()
+
+
+async def toggle_dark() -> None:
+    """Dark if the page is not, light if it is; kept as the user's theme."""
+    settings = await asyncio.to_thread(load_user_settings)
+    now = theme_of(getattr(ui.context.client, "_cb_theme", settings.theme))
+    settings.theme = "light" if now.dark else "dark"
+    try:
+        await asyncio.to_thread(save_user_settings, settings)
+    except OSError as e:
+        logger.exception("Could not save the theme")
+        ui.notify(f"Not saved: {e}", type="negative")
+        return
+    switch_theme(settings.theme)

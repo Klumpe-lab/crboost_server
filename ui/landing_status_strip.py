@@ -32,7 +32,7 @@ from ui.components.copyable import copy_button, copy_on_click
 from ui.components.reactive import FingerprintedView
 from ui.config_settings_dialog import open_config_settings
 from ui.protocols_dialog import open_protocols_dialog
-from ui.user_settings_dialog import open_user_settings
+from ui.user_settings_dialog import open_user_settings, toggle_dark
 from ui.styles import MONO, SANS as FONT
 
 logger = logging.getLogger(__name__)
@@ -40,10 +40,10 @@ logger = logging.getLogger(__name__)
 CURRENT_USER = getpass.getuser()
 HOSTNAME = socket.gethostname()
 
-CLR_HEADING = "#0f172a"
-CLR_LABEL = "#475569"
-CLR_SUBLABEL = "#94a3b8"
-CLR_BORDER = "#e2e8f0"
+CLR_HEADING = "var(--cb-slate-900, #0f172a)"
+CLR_LABEL = "var(--cb-slate-600, #475569)"
+CLR_SUBLABEL = "var(--cb-slate-400, #94a3b8)"
+CLR_BORDER = "var(--cb-slate-200, #e2e8f0)"
 CLR_ACCENT = "#2563eb"
 CLR_OK = "#10b981"
 CLR_WARN = "#f59e0b"
@@ -59,11 +59,11 @@ _POP_TITLE = f"{FONT} font-size: 12px; font-weight: 700; color: {CLR_HEADING};"
 _POP_LABEL = (
     f"{FONT} font-size: 9px; font-weight: 700; color: {CLR_LABEL}; letter-spacing: 0.06em; text-transform: uppercase;"
 )
-_POP_DESC = f"{FONT} font-size: 10px; color: #334155; line-height: 1.4;"
+_POP_DESC = f"{FONT} font-size: 10px; color: var(--cb-slate-700, #334155); line-height: 1.4;"
 _POP_VAL = f"{MONO} font-size: 10.5px; color: {CLR_HEADING};"
 _POP_CHIP = (
-    f"{MONO} font-size: 9.5px; color: {CLR_LABEL}; background: #f1f5f9; "
-    "border: 1px solid #e2e8f0; border-radius: var(--cb-r-md, 4px); padding: 1px 6px;"
+    f"{MONO} font-size: 9.5px; color: {CLR_LABEL}; background: var(--cb-slate-100, #f1f5f9); "
+    "border: 1px solid var(--cb-slate-200, #e2e8f0); border-radius: var(--cb-r-md, 4px); padding: 1px 6px;"
 )
 _POP_PATH = f"{MONO} font-size: 10px; color: {CLR_HEADING}; word-break: break-all;"
 
@@ -82,7 +82,8 @@ def _pop_copy_row(text: str, *, path: bool = False) -> None:
         ui.row()
         .classes("items-center")
         .style(
-            "gap: 6px; background: #f1f5f9; border: 1px solid #e2e8f0; border-radius: var(--cb-r-md, 5px); "
+            "gap: 6px; background: var(--cb-slate-100, #f1f5f9); border: 1px solid var(--cb-slate-200, #e2e8f0); "
+            "border-radius: var(--cb-r-md, 5px); "
             "padding: 4px 6px; margin-top: 3px; width: 100%;"
         )
     ):
@@ -289,12 +290,15 @@ class LandingStatusStrip(FingerprintedView):
                     .style(
                         "display: flex; align-items: center; gap: 4px; padding: 0 6px; "
                         "border-radius: var(--cb-r-sm, 3px); "
-                        "background: #edf4fb; border: 1px solid #c9dbee; flex-shrink: 0; line-height: 16px;"
+                        "background: var(--cb-x-edf4fb, #edf4fb); border: 1px solid var(--cb-x-c9dbee, #c9dbee); "
+                        "flex-shrink: 0; line-height: 16px;"
                     )
                     .tooltip("Your personal config override is active (~/.crboost/conf.yaml)")
                 ):
                     ui.element("div").style(f"width: 5px; height: 5px; border-radius: 50%; background: {CLR_ACCENT};")
-                    ui.label("custom").style(f"{FONT} font-size: 9px; font-weight: 600; color: #1f4e79;")
+                    ui.label("custom").style(
+                        f"{FONT} font-size: 9px; font-weight: 600; color: var(--cb-x-1f4e79, #1f4e79);"
+                    )
 
             house_button(
                 "Protocols",
@@ -302,6 +306,7 @@ class LandingStatusStrip(FingerprintedView):
                 tooltip="Protocol bundles: a protocol's stages and parameters, or create a project from one",
             )
 
+            icon_button("contrast", toggle_dark, tooltip="Dark or light (the papers are in User settings)")
             icon_button("person", open_user_settings, tooltip="User settings")
 
             icon_button(
@@ -338,7 +343,7 @@ class LandingStatusStrip(FingerprintedView):
                 "letter-spacing: 0.05em; text-transform: uppercase;"
             )
             # A dotted underline hints the value is clickable for details/copy.
-            val_extra = "border-bottom: 1px dotted #94a3b8;" if popover else ""
+            val_extra = "border-bottom: 1px dotted var(--cb-slate-400, #94a3b8);" if popover else ""
             ui.label(value).style(f"{MONO} font-size: 10px; color: {CLR_LABEL}; {val_extra}")
             if popover is not None:
                 # Keep the QMenu itself transparent/chromeless and render the light card as a child

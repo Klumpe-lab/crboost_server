@@ -12,7 +12,12 @@ from __future__ import annotations
 
 import math
 from collections.abc import Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, fields, replace
+from functools import cache
+
+from nicegui import context
+
+from ui.dashboard.theme import dark_of, theme_of
 
 # One palette for every chart on the page: accent, ink, and a muted slate for the
 # third series (or a fit/trend line).
@@ -82,6 +87,8 @@ class ChartTheme:
     pick_color_dark: str = "#fbbf24"
     pick_opacity: float = 0.85
     hist_color: str = "#4338ca"
+    # The dark variant of a theme (`live_theme`), so a dark one is not darkened again.
+    dark: bool = False
 
 
 DEFAULT_THEME = ChartTheme()
@@ -115,6 +122,39 @@ JOURNEY_THEME = replace(
     hist_color="#a4bdd8",
 )
 
+
+def _is_hex(v: object) -> bool:
+    return isinstance(v, str) and v.startswith("#") and len(v) == 7
+
+
+@cache
+def _dark_chart(theme: ChartTheme) -> ChartTheme:
+    """A theme's colours as the dark theme has them (ui/dashboard/theme.py `dark_of`): grids and axis lines dim,
+    ink pale, series lifted. The pick colours over slab images keep theirs."""
+    keep = {"pick_scale", "pick_color", "pick_scale_dark", "pick_color_dark"}
+    changes: dict[str, object] = {"dark": True}
+    for f in fields(theme):
+        v = getattr(theme, f.name)
+        if f.name in keep:
+            continue
+        if _is_hex(v):
+            changes[f.name] = dark_of(v)
+        elif isinstance(v, tuple) and v and all(_is_hex(x) for x in v):
+            changes[f.name] = tuple(dark_of(x) for x in v)
+    return replace(theme, **changes)
+
+
+def live_theme(theme: ChartTheme = DEFAULT_THEME) -> ChartTheme:
+    """`theme` as the page building the chart shows it: its dark variant on a page in a dark theme."""
+    if theme.dark:
+        return theme
+    try:
+        client = context.client
+    except RuntimeError:  # built outside a page (a worker, a test): the light look
+        return theme
+    return _dark_chart(theme) if theme_of(getattr(client, "_cb_theme", None)).dark else theme
+
+
 # ECharts line types → Plotly dash names.
 _PLOTLY_DASH = {"dashed": "dash", "dotted": "dot", "solid": "solid"}
 
@@ -144,6 +184,7 @@ def _pick_colors(marker: dict, picks: list, has_scores: bool, theme: ChartTheme,
 
 
 def _empty_fig(message: str, theme: ChartTheme = DEFAULT_THEME) -> dict:
+    theme = live_theme(theme)
     return {
         "data": [],
         "layout": _plotly_layout(
@@ -174,6 +215,7 @@ def _empty_fig(message: str, theme: ChartTheme = DEFAULT_THEME) -> dict:
 def _build_xy_scatter_fig(
     picks: list, tomo_dims_xyz: tuple, score_field: str | None, theme: ChartTheme = DEFAULT_THEME
 ) -> dict:
+    theme = live_theme(theme)
     x_dim, y_dim, _z_dim = tomo_dims_xyz
     # Pad the axes ~2% of each dim so edge picks (x≈0 or x≈x_dim — common in
     # cryo-ET fields) draw their full marker inside the frame; the dashed
@@ -257,6 +299,7 @@ def _build_xz_scatter_fig(
     xz_preview_url: str | None = None,
     theme: ChartTheme = DEFAULT_THEME,
 ) -> dict:
+    theme = live_theme(theme)
     x_dim, _y_dim, z_dim = tomo_dims_xyz
     # ~2% axis padding so edge picks draw their full marker inside the frame;
     # the dashed reference rect stays at the true [0,dim] (see XY builder).
@@ -340,6 +383,7 @@ def _build_xz_scatter_fig(
 
 
 def _build_score_hist_fig(picks: list, score_field: str | None, theme: ChartTheme = DEFAULT_THEME) -> dict:
+    theme = live_theme(theme)
     scores = [p.get("score") for p in picks if p.get("score") is not None]
     if not scores:
         return _empty_fig("no score column in candidates.star", theme)
@@ -475,6 +519,7 @@ _LEGEND_EXTENT = 22
 
 def _grid(show_legend: bool, theme: ChartTheme = DEFAULT_THEME) -> dict:
     """Starting plot rect. ECharts shrinks it as needed to fit labels + axis names."""
+    theme = live_theme(theme)
     grid: dict = {"left": 6, "right": 12, "top": theme.grid_top, "bottom": 8}
     if show_legend:
         grid["outerBounds"] = {"left": 0, "right": 0, "top": 0, "bottom": _LEGEND_EXTENT}
@@ -490,6 +535,7 @@ def _grid(show_legend: bool, theme: ChartTheme = DEFAULT_THEME) -> dict:
 # client-side. Raw string: the JS carries backslash escapes. `__OPEN__`, `__MONO__` and
 # `__NOTE__` take the theme's card type (`_card_js`).
 def _card_open(theme: ChartTheme) -> str:
+    theme = live_theme(theme)
     return (
         f"'<div style=\"font-family:{theme.card_font};font-size:{theme.card_size}px;line-height:1.5;"
         f"color:{theme.card_color}\">'"
@@ -499,7 +545,7 @@ def _card_open(theme: ChartTheme) -> str:
 _TOOLTIP_CARD_OPEN = _card_open(DEFAULT_THEME)
 _TOOLTIP_IMG_JS = (
     "'<img src=\"' + __SRC__ + '\" style=\"display:block;width:336px;height:336px;margin-top:5px;"
-    'border-radius:var(--cb-r-sm, 3px);background:#f1f5f9;object-fit:contain" '
+    'border-radius:var(--cb-r-sm, 3px);background:var(--cb-slate-100, #f1f5f9);object-fit:contain" '
     "onerror=\"this.style.display=\\'none\\'\">'"
 )
 _TOOLTIP_FORMATTER_JS = r"""
@@ -547,7 +593,7 @@ _FIT_TOOLTIP_JS = r"""
   const f = ps[0].data ? ps[0].data[0] : null;
   let h = __OPEN__;
   if (typeof f === 'number' && f > 0) h += '<div style="font-weight:600">' + (1 / f).toFixed(1)
-    + ' Å <span style="color:#475569;font-weight:400">(' + f.toFixed(3) + ' 1/Å)</span></div>';
+    + ' Å <span style="color:var(--cb-slate-600, #475569);font-weight:400">(' + f.toFixed(3) + ' 1/Å)</span></div>';
   for (const p of ps) {
     const v = p.data ? p.data[1] : null;
     if (v === null || v === undefined) continue;
@@ -587,6 +633,7 @@ _TOOLTIP_POSITION_JS = """
 
 def _tooltip(formatter_js: str, *, trigger: str = "axis", theme: ChartTheme = DEFAULT_THEME) -> dict:
     """The house hover card with a JS formatter, on the app tooltip's panel (ui/dashboard/css.py)."""
+    theme = live_theme(theme)
     out = {
         "trigger": trigger,
         "backgroundColor": "#f8fafc",
@@ -608,6 +655,7 @@ def _tooltip(formatter_js: str, *, trigger: str = "axis", theme: ChartTheme = DE
 
 
 def _legend(show: bool, theme: ChartTheme = DEFAULT_THEME) -> dict:
+    theme = live_theme(theme)
     return {
         "show": show,
         "bottom": 0,
@@ -623,6 +671,7 @@ def _legend(show: bool, theme: ChartTheme = DEFAULT_THEME) -> dict:
 def _axis(name: str, *, horizontal: bool, theme: ChartTheme = DEFAULT_THEME) -> dict:
     """One value axis in the theme's style (the house one: bold name, mono labels, no ticks;
     the x axis keeps its line and the y axis keeps faint grid lines)."""
+    theme = live_theme(theme)
     label = {"fontFamily": theme.tick_font, "fontSize": theme.tick_size, "color": theme.tick_color}
     name_style = {
         "fontFamily": theme.name_font,
@@ -670,6 +719,7 @@ def tilt_color(tilt_deg: float, max_abs_tilt: float, theme: ChartTheme = DEFAULT
     """A signed stage tilt on the theme's diverging scale: its neutral at 0°, darkening toward
     the negative or positive pole with |tilt| (the house poles: indigo and amber, the canonical
     CVD-safe pair)."""
+    theme = live_theme(theme)
     t = 0.0 if max_abs_tilt <= 0 else min(1.0, abs(tilt_deg) / max_abs_tilt)
     return _mix(theme.tilt_mid, theme.tilt_neg if tilt_deg < 0 else theme.tilt_pos, t)
 
@@ -772,6 +822,7 @@ def build_per_tilt_chart(
     dropped tilt reads the same in every chart of the journey (the stages after the
     filter carry no row for it at all, and then only the line is left).
     """
+    theme = live_theme(theme)
     drops = _drop_angles(dropped_tilts)
     drop_style = {"color": "#ffffff", "borderColor": theme.drop_color, "borderWidth": 1.2}
     ringed = False
@@ -877,6 +928,7 @@ def build_motion_track_chart(
     symmetric range so a path's direction reads true. `dropped_tilts`: stage angles the
     tilt filter dropped — those paths are drawn dashed in the drop red instead of their
     tilt colour."""
+    theme = live_theme(theme)
     drops = _drop_angles(dropped_tilts)
     max_abs_tilt = max((abs(float(t["tilt"])) for t in tracks), default=0.0)
     lim = 1.0
@@ -937,6 +989,7 @@ def build_ctf_fit_chart(
     spectrum (÷ its fitted envelope) against the CTF² model over spatial
     frequency in 1/Å, a reference line at Warp's fit-resolution estimate, and the band
     beyond the fitted frequency window shaded. y auto-ranges to the data."""
+    theme = live_theme(theme)
     accent, ink = theme.fit_model, theme.fit_measured
     model_series: dict = {
         "name": "CTF model",
@@ -1029,7 +1082,7 @@ _COUNTS_TOOLTIP_JS = r"""
     h += '<div>' + p.marker + '<span style="font-family:IBM Plex Mono,monospace;font-weight:600">' + v
       + '</span> ' + p.seriesName + '</div>';
   }
-  if (!total) h += '<div style="color:#475569">none</div>';
+  if (!total) h += '<div style="color:var(--cb-slate-600, #475569)">none</div>';
   return h + '</div>';
 }
 """

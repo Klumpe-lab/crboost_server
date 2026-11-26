@@ -15,6 +15,7 @@ from services.configs.user_prefs_service import get_prefs_service
 from services.project_resolve import resolve_project
 from services.result import ErrorCode
 from ui.dashboard.css import ensure_assets_loaded
+from ui.dashboard.theme import theme_head
 from services.project_state import get_project_state_for
 from ui.open_project import load_project_into_tab, workspace_url
 from services.routes import Route, disambiguating_base, parse_route, route_to_path
@@ -22,6 +23,7 @@ from ui.routing import RouteWriter, apply_route
 from ui.ui_state import get_ui_state_manager
 from ui.agent_plan_page import render_agent_plan_page
 from ui.napari_open_page import render_napari_open_page
+from ui.theme_ideas import render_theme_ideas
 from ui.components.buttons import house_button
 from ui.data_import_panel import build_data_import_panel
 from ui.workspace_page import build_workspace_page
@@ -31,7 +33,7 @@ logger = logging.getLogger(__name__)
 # The page shown while a project loads: the workspace's whole viewport, a spinner in its middle.
 _OPENING_STYLE = (
     "position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center; "
-    "justify-content: center; gap: 10px; background: #ffffff;"
+    "justify-content: center; gap: 10px; background: var(--cb-white, #ffffff);"
 )
 
 
@@ -40,6 +42,7 @@ def create_ui_router(backend: CryoBoostBackend):
     # --- PAGE 1: LANDING ---
     @ui.page("/")
     async def landing_page(client: Client):
+        await theme_head()
         await client.connected()
         ensure_assets_loaded()
 
@@ -70,7 +73,10 @@ def create_ui_router(backend: CryoBoostBackend):
         with (
             ui.column()
             .classes("bg-gray-50 px-6 py-3")
-            .style("position: fixed; inset: 0; overflow: hidden; flex-wrap: nowrap; box-sizing: border-box;")
+            .style(
+                "position: fixed; inset: 0; overflow: hidden; flex-wrap: nowrap; box-sizing: border-box; "
+                "background-image: var(--cb-desk-art, none); background-size: var(--cb-desk-art-size, auto);"
+            )
         ):
             from ui.landing_status_strip import mount_landing_status_strip
 
@@ -95,6 +101,7 @@ def create_ui_router(backend: CryoBoostBackend):
         """One body behind all four `/p/...` shapes: resolve the project from its
         directory name, load it into this tab, build the workspace, then drive it onto
         the route's view + target."""
+        await theme_head()
         await client.connected()
         ensure_assets_loaded()
 
@@ -123,7 +130,7 @@ def create_ui_router(backend: CryoBoostBackend):
         started = time.monotonic()
         with ui.element("div").style(_OPENING_STYLE) as opening:
             ui.spinner(size="lg", color="#94a3b8")
-            ui.label(f"Opening {target.name}…").style("font-size: 11px; color: #64748b;")
+            ui.label(f"Opening {target.name}…").style("font-size: 11px; color: var(--cb-slate-500, #64748b);")
         if not await load_project_into_tab(backend, ui_mgr, target):
             ui.navigate.to("/")
             return
@@ -190,6 +197,7 @@ def create_ui_router(backend: CryoBoostBackend):
     # keeps working: it means "this tab's project", which the addressable URL spells out.
     @ui.page("/workspace")
     async def workspace_page(client: Client):
+        await theme_head()
         await client.connected()
         ensure_assets_loaded()
 
@@ -206,18 +214,29 @@ def create_ui_router(backend: CryoBoostBackend):
     # --- AUX PAGES ---
     @ui.page("/agent/plan/{plan_id}")
     async def agent_plan_page(client: Client, plan_id: str):
+        await theme_head()
         await client.connected()
         ensure_assets_loaded()
         render_agent_plan_page(plan_id)
 
     @ui.page("/napari/open", title="napari")
     async def napari_open_page(client: Client, volume: str = ""):
+        await theme_head()
         await client.connected()
         ensure_assets_loaded()
         render_napari_open_page(backend, volume)
 
+    # Every theme side by side, on the app's own parts (ui/theme_ideas.py). The page itself stays light: each board
+    # carries its theme.
+    @ui.page("/dev/ideas", title="Theme ideas")
+    async def theme_ideas_page(client: Client):
+        await client.connected()
+        ensure_assets_loaded()
+        render_theme_ideas()
+
     @ui.page("/cluster-info")
     async def cluster_info_page(client: Client):
+        await theme_head()
         await client.connected()
         ensure_assets_loaded()
         with ui.column().classes("p-8"):

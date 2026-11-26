@@ -259,7 +259,8 @@ _CARD_EDGE = (
 _VIEW_STYLE = "min-width: 0; height: 100%; overflow: visible; display: none; flex-direction: row; position: relative;"
 _VIEW_COLUMN_STYLE = (
     "flex: 1 1 0; min-width: 0; height: 100%; display: flex; flex-direction: column; overflow: hidden; "
-    f"box-sizing: border-box; background: var(--cb-page, #f6f8fb); {_CARD_EDGE}"
+    f"box-sizing: border-box; background: var(--cb-page, #f6f8fb); background-image: var(--cb-card-art, none); "
+    f"{_CARD_EDGE}"
 )
 # The job page's title line carries its roster row's blue tick on its left (pipeline_roster `_row_paint`),
 # so the page reads as that row opened; with no job open the frame shows the branch map under a plain line.
@@ -848,7 +849,8 @@ def build_workspace_page(backend: CryoBoostBackend, route_writer: RouteWriter | 
 
     with ui.element("div").style(
         "position: fixed; inset: 0; display: flex; flex-direction: row; "
-        "overflow: hidden; gap: 0; margin: 0; padding: 0; background: var(--cb-desk, #e9eef4);"
+        "overflow: hidden; gap: 0; margin: 0; padding: 0; background: var(--cb-desk, #e9eef4); "
+        "background-image: var(--cb-desk-art, none); background-size: var(--cb-desk-art-size, auto);"
     ):
         primary_sidebar = ui.element("div").style(
             "width: 60px; min-width: 60px; height: 100%; flex-shrink: 0; "
@@ -865,7 +867,7 @@ def build_workspace_page(backend: CryoBoostBackend, route_writer: RouteWriter | 
                 "width: var(--cb-roster-w, 340px); min-width: var(--cb-roster-w, 340px); align-self: stretch; "
                 f" margin: {_PANEL_GAP_PX}px 0 "
                 f"{_PANEL_GAP_PX}px {_PANEL_GAP_PX}px; flex-shrink: 0; box-sizing: border-box; "
-                f"background: var(--cb-surface, #ffffff); {_CARD_EDGE} "
+                f"background: var(--cb-surface, #ffffff); background-image: var(--cb-card-art, none); {_CARD_EDGE} "
                 "overflow-y: auto; overflow-x: hidden; "
                 "flex-direction: column; gap: 0; display: flex;"
             )
