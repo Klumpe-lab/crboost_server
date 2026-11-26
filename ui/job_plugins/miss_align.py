@@ -19,7 +19,7 @@ from ui.job_plugins import register_params_renderer
 from ui.job_plugins._field_styles import CLR_HEADER, HELPER_STYLE, MONO
 from ui.job_plugins.default_renderer import render_default_params_card
 
-_WARN_STYLE = HELPER_STYLE + " color: #b45309;"
+_WARN_STYLE = HELPER_STYLE + " color: var(--cb-amber-700, #b45309);"
 _ROW_STYLE = f"{MONO} font-size: 10px; color: {CLR_HEADER}; white-space: pre;"
 
 

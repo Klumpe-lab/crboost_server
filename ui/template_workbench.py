@@ -146,8 +146,8 @@ _TW_COLS = "10px minmax(0, 1fr) 84px 150px 64px 58px 46px"
 
 _SANS = "font-family: 'IBM Plex Sans', sans-serif;"
 _ROW_MONO = "font-family: 'IBM Plex Mono', monospace; font-size: 9.5px; font-variant-numeric: tabular-nums;"
-_BODY = "#1e293b"
-_SOFT = "#5b7089"
+_BODY = "var(--cb-slate-800, #1e293b)"
+_SOFT = "var(--cb-x-5b7089, #5b7089)"
 _CAPTION = f"{_SANS} font-size: 9.5px; color: {_SOFT}; line-height: 1.45;"
 _TH = voice("th", font="'IBM Plex Sans', sans-serif", size="9px", weight=600, ink="#7d93ab") + " white-space: nowrap;"
 # The two marks a row may carry: amber for something to look at, red only for a broken volume.
@@ -1158,7 +1158,9 @@ class TemplateWorkbench:
     def _render_size_badge(self, file_path: str) -> None:
         res = self._format_file_size(file_path)
         if res is None:
-            ui.label("missing").style(f"{_ROW_MONO} color: #b91c1c;").tooltip("The file is not on disk")
+            ui.label("missing").style(f"{_ROW_MONO} color: var(--cb-red-700, #b91c1c);").tooltip(
+                "The file is not on disk"
+            )
             return
         label, large = res
         with ui.element("span").style(
@@ -1325,7 +1327,7 @@ class TemplateWorkbench:
                 hint="Box edge in pixels",
             )
             auto = house_check("auto box", value=self.auto_box).bind_value(self, "auto_box")
-            auto.style(f"{_SANS} font-size: 10px; color: #475569;")
+            auto.style(f"{_SANS} font-size: 10px; color: var(--cb-slate-600, #475569);")
             auto.on_value_change(self._on_auto_box_toggle)
             _field(
                 "lowpass",

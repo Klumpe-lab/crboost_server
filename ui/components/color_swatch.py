@@ -47,7 +47,7 @@ def render_color_swatch(
         "display: inline-flex; align-items: center; gap: 6px; cursor: pointer; flex-shrink: 0;"
     ) as box:
         square = ui.element("div").style(_square_style(current))
-        value = ui.label(current).style(f"{MONO} font-size: 9.5px; color: #5b7089;")
+        value = ui.label(current).style(f"{MONO} font-size: 9.5px; color: var(--cb-x-5b7089, #5b7089);")
         swatch = ColorSwatch(square, value)
         with ui.menu().props("auto-close"), ui.element("div").style("display: flex; gap: 4px; padding: 6px;"):
             for color in SPECIES_OVERLAY_COLORS:

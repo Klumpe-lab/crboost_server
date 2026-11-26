@@ -1,7 +1,7 @@
 """The branch map's look as variables, and its small text helpers.
 
 Every colour and line the look decides is a CSS variable `--cb-<name>` read with a fallback, so the map takes its
-values from the app's theme block (ui/dashboard/css.py `_THEME_CSS`) and looks the same as the rest of the app
+values from the app's theme block (ui/dashboard/theme.py) and looks the same as the rest of the app
 when that block moves. The ink scale, the states, what is chosen and the map's own surfaces are named here once;
 the components below never spell a colour.
 """

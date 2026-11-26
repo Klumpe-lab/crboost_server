@@ -95,14 +95,14 @@ def mount_background_task_tray(project_path_provider: Callable[[], str | None]) 
 
 def _render_task_card(task: BackgroundTaskRecord, refresh_tray: Callable[[], None]) -> None:
     color, icon = _status_glyph(task.status)
-    card_bg = "#ffffff"
-    card_border = "#e2e8f0"
+    card_bg = "var(--cb-white, #ffffff)"
+    card_border = "var(--cb-slate-200, #e2e8f0)"
     if task.status == "succeeded":
-        card_border = "#a7f3d0"
+        card_border = "var(--cb-emerald-200, #a7f3d0)"
     elif task.status == "failed":
-        card_border = "#fecaca"
+        card_border = "var(--cb-red-200, #fecaca)"
     elif task.status == "cancelled":
-        card_border = "#fde68a"
+        card_border = "var(--cb-amber-200, #fde68a)"
 
     with ui.element("div").style(
         f"background: {card_bg}; border: 1px solid {card_border}; "
@@ -115,12 +115,12 @@ def _render_task_card(task: BackgroundTaskRecord, refresh_tray: Callable[[], Non
             ui.icon(icon, size="14px").style(f"color: {color}; flex-shrink: 0;")
             with ui.column().classes("flex-1 min-w-0").style("gap: 1px;"):
                 ui.label(task.title).style(
-                    "font-size: 11px; font-weight: 600; color: #1e293b; "
+                    "font-size: 11px; font-weight: 600; color: var(--cb-slate-800, #1e293b); "
                     "white-space: nowrap; overflow: hidden; text-overflow: ellipsis;"
                 )
                 if task.subtitle:
                     ui.label(task.subtitle).style(
-                        "font-size: 9px; color: #64748b; "
+                        "font-size: 9px; color: var(--cb-slate-500, #64748b); "
                         "white-space: nowrap; overflow: hidden; text-overflow: ellipsis;"
                     )
 
@@ -134,29 +134,30 @@ def _render_task_card(task: BackgroundTaskRecord, refresh_tray: Callable[[], Non
             pct = task.progress_pct
             if pct is not None:
                 with ui.element("div").style(
-                    "width: 100%; height: 4px; background: #f1f5f9; border-radius: var(--cb-r-sm, 2px); "
+                    "width: 100%; height: 4px; background: var(--cb-slate-100, #f1f5f9); "
+                    "border-radius: var(--cb-r-sm, 2px); "
                     "overflow: hidden; margin-top: 6px;"
                 ):
                     ui.element("div").style(
-                        f"width: {pct}%; height: 100%; background: #3b82f6; transition: width 0.3s;"
+                        f"width: {pct}%; height: 100%; background: var(--cb-blue-500, #3b82f6); transition: width 0.3s;"
                     )
                 with ui.row().classes("w-full items-center").style("gap: 6px; margin-top: 3px;"):
                     ui.label(f"{task.progress_current}/{task.progress_total}").style(
-                        "font-size: 9px; font-family: ui-monospace, monospace; color: #475569;"
+                        "font-size: 9px; font-family: ui-monospace, monospace; color: var(--cb-slate-600, #475569);"
                     )
                     if task.progress_message:
                         ui.label(task.progress_message).style(
-                            "font-size: 9px; color: #94a3b8; flex: 1; "
+                            "font-size: 9px; color: var(--cb-slate-400, #94a3b8); flex: 1; "
                             "white-space: nowrap; overflow: hidden; text-overflow: ellipsis; "
                             "font-family: ui-monospace, monospace;"
                         )
             else:
                 # Indeterminate
                 with ui.row().classes("w-full items-center").style("gap: 6px; margin-top: 4px;"):
-                    ui.spinner("dots", size="xs").style("color: #3b82f6;")
+                    ui.spinner("dots", size="xs").style("color: var(--cb-blue-500, #3b82f6);")
                     msg = task.progress_message or "working…"
                     ui.label(msg).style(
-                        "font-size: 9px; color: #64748b; "
+                        "font-size: 9px; color: var(--cb-slate-500, #64748b); "
                         "white-space: nowrap; overflow: hidden; text-overflow: ellipsis;"
                     )
         else:
@@ -164,7 +165,7 @@ def _render_task_card(task: BackgroundTaskRecord, refresh_tray: Callable[[], Non
             outcome = _outcome_text(task)
             if outcome:
                 ui.label(outcome).style(
-                    "font-size: 9px; color: #64748b; margin-top: 3px; "
+                    "font-size: 9px; color: var(--cb-slate-500, #64748b); margin-top: 3px; "
                     "font-family: ui-monospace, monospace; "
                     # Multi-line for error messages; default wrap.
                     "word-break: break-word;"

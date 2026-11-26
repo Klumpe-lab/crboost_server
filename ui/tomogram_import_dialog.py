@@ -45,9 +45,9 @@ from ui.job_plugins._field_styles import PAGE_SECTION_STYLE
 from ui.local_file_picker import local_file_picker
 
 _MONO = "font-family: ui-monospace, monospace;"
-_HINT = "font-size: 10px; color: #94a3b8; line-height: 1.35;"
-_STATUS = "font-size: 10px; color: #475569; line-height: 1.35;"
-_STATUS_BAD = "font-size: 10px; color: #b45309; line-height: 1.35;"
+_HINT = "font-size: 10px; color: var(--cb-slate-400, #94a3b8); line-height: 1.35;"
+_STATUS = "font-size: 10px; color: var(--cb-slate-600, #475569); line-height: 1.35;"
+_STATUS_BAD = "font-size: 10px; color: var(--cb-amber-700, #b45309); line-height: 1.35;"
 # One browse dialog for all three source shapes — folders are always listed, and these are
 # the files worth showing beside them.
 _PICKER_GLOB = "*.mrc,*.rec,*.star"
@@ -112,7 +112,7 @@ def open_tomogram_import_dialog(backend, project_path, on_done: Callable[[], Non
             ui.label(f["name"]).classes("cb-ltable-name").tooltip(f.get("path") or f["name"])
             if has_dims:
                 ui.label(f"{f['nx']}×{f['ny']}×{f['nz']}").classes("cb-ltable-cell").style(
-                    f"{_MONO} font-size: 11px; color: #64748b;"
+                    f"{_MONO} font-size: 11px; color: var(--cb-slate-500, #64748b);"
                 )
             else:
                 ui.label("—").classes("cb-ltable-cell").style(f"{_MONO} font-size: 11px; color: #cbd5e1;")
@@ -122,7 +122,9 @@ def open_tomogram_import_dialog(backend, project_path, on_done: Callable[[], Non
                 elif f.get("has_voxel_size"):
                     # Pixel size is independent of dims — a reference star may carry apix but
                     # no rlnTomoSize* columns, so don't gate this on has_dims.
-                    ui.label(f"{f['voxel_size']:.3g} Å/px").style(f"{_MONO} font-size: 11px; color: #64748b;")
+                    ui.label(f"{f['voxel_size']:.3g} Å/px").style(
+                        f"{_MONO} font-size: 11px; color: var(--cb-slate-500, #64748b);"
+                    )
                 elif has_dims or f.get("path"):
                     render_chip(
                         "apix",
@@ -147,7 +149,7 @@ def open_tomogram_import_dialog(backend, project_path, on_done: Callable[[], Non
                     "project."
                     if src["kind"] == _KIND_NONE
                     else "Nothing to import from that path."
-                ).style("font-size: 11px; color: #9ca3af; padding: 10px;")
+                ).style("font-size: 11px; color: var(--cb-gray-400, #9ca3af); padding: 10px;")
                 return
             tmpl = "22px minmax(0,1fr) 110px 96px" if selectable else "minmax(0,1fr) 110px 96px"
             with ui.element("div").classes("cb-ltable-row cb-ltable-head").style(f"grid-template-columns: {tmpl};"):
@@ -167,7 +169,7 @@ def open_tomogram_import_dialog(backend, project_path, on_done: Callable[[], Non
                     f"… and {len(files) - _MAX_PREVIEW_ROWS} more, not drawn. They are still "
                     f"{'selected and will be imported' if selectable else 'part of this star'} — "
                     "only the table is capped. Narrow the folder to review them individually."
-                ).style("font-size: 11px; color: #b45309; padding: 6px 10px;")
+                ).style("font-size: 11px; color: var(--cb-amber-700, #b45309); padding: 6px 10px;")
 
     def _update_counts() -> None:
         if src["kind"] == _KIND_STAR:
@@ -473,7 +475,7 @@ def open_tomogram_import_dialog(backend, project_path, on_done: Callable[[], Non
 
     dialog = ui.dialog().props("persistent")
     with dialog, ui.card().style("min-width: 720px; max-width: 880px; gap: 0; padding: 16px 18px 14px;"):
-        ui.label("Import tomograms").style("font-size: 14px; font-weight: 600; color: #1e293b;")
+        ui.label("Import tomograms").style("font-size: 14px; font-weight: 600; color: var(--cb-slate-800, #1e293b);")
         ui.label("Reconstructed volumes for a project with no preprocessing pipeline of its own.").classes(
             "cb-detail-meta"
         )
@@ -558,7 +560,7 @@ def open_tomogram_import_dialog(backend, project_path, on_done: Callable[[], Non
             for b in prior_batches:
                 with ui.row().classes("items-center w-full gap-2 no-wrap").style("padding: 1px 0;"):
                     ui.label(b.imported_at.strftime("%Y-%m-%d %H:%M")).classes("cb-detail-meta")
-                    ui.label(b.label).style(f"{_MONO} font-size: 11px; color: #475569;").tooltip(
+                    ui.label(b.label).style(f"{_MONO} font-size: 11px; color: var(--cb-slate-600, #475569);").tooltip(
                         b.reference_star or "\n".join(b.source_paths[:12]) or "—"
                     )
                     ui.space()

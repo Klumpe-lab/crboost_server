@@ -575,7 +575,7 @@ const DOT_R = { S: 1.8, M: 2.6, L: 4 };
 const HEAT_BOX_H = 112; // the σ-by-tomogram strip's scroll box
 const HEAT_ROW = [3, 8]; // a strip row's height in px: at least, at most
 const HIST_H = 54; // a range filter's histogram
-const MENU_STYLE = "position:fixed;z-index:9000;max-height:360px;overflow-y:auto;padding:4px;background:#ffffff;border:1px solid #cbd5e1;border-radius:6px;box-shadow:0 10px 28px rgba(15,23,42,0.18),0 1px 3px rgba(15,23,42,0.12);font-family:'IBM Plex Sans',sans-serif;font-size:10px;color:#0f172a;";
+const MENU_STYLE = "position:fixed;z-index:9000;max-height:360px;overflow-y:auto;padding:4px;background:var(--cb-white, #ffffff);border:1px solid var(--cb-slate-300, #cbd5e1);border-radius:6px;box-shadow:0 10px 28px rgba(15,23,42,0.18),0 1px 3px rgba(15,23,42,0.12);font-family:'IBM Plex Sans',sans-serif;font-size:10px;color:var(--cb-slate-900, #0f172a);";
 
 function el(tag, style, cls) {
   const e = document.createElement(tag);
@@ -605,14 +605,14 @@ export default {
     <div ref="root" class="cbk" style="display:flex;flex-direction:column;width:100%;height:100%;min-height:0;position:relative;">
       <div ref="cards" class="cbk-cards" style="display:flex;flex-wrap:wrap;gap:6px;align-items:stretch;"></div>
       <div class="cbk-line" style="display:flex;align-items:center;flex-wrap:wrap;gap:4px 16px;min-height:30px;padding:4px 0 6px 0;">
-        <div ref="scope" style="display:flex;align-items:center;gap:4px;font-size:10px;color:#334155;"></div>
-        <div ref="post" style="display:flex;align-items:center;gap:6px;font-size:9px;color:#475569;"></div>
+        <div ref="scope" style="display:flex;align-items:center;gap:4px;font-size:10px;color:var(--cb-slate-700, #334155);"></div>
+        <div ref="post" style="display:flex;align-items:center;gap:6px;font-size:9px;color:var(--cb-slate-600, #475569);"></div>
         <div ref="edge" style="display:flex;align-items:center;gap:2px;"></div>
         <div ref="counts" style="margin-left:auto;display:flex;align-items:center;gap:8px;"></div>
       </div>
-      <div ref="body" class="cbk-body" style="flex:1 1 0%;min-height:0;position:relative;border-radius:8px;background:#eef2f7;overflow:hidden;">
-        <div ref="rail" class="cbk-rail" style="position:absolute;left:0;top:0;bottom:0;width:184px;display:flex;flex-direction:column;background:#f8fafc;border-right:1px solid #dbe3ec;font-size:10px;color:#334155;z-index:4;"></div>
-        <div ref="selbar" class="cbk-selbar" style="position:absolute;left:50%;bottom:10px;transform:translateX(-50%);z-index:7;display:none;align-items:center;gap:8px;padding:5px 10px;background:#ffffff;border:1px solid #cbd5e1;border-radius:8px;box-shadow:0 8px 24px rgba(15,23,42,0.18);font-size:10px;color:#0f172a;white-space:nowrap;"></div>
+      <div ref="body" class="cbk-body" style="flex:1 1 0%;min-height:0;position:relative;border-radius:8px;background:var(--cb-x-eef2f7, #eef2f7);overflow:hidden;">
+        <div ref="rail" class="cbk-rail" style="position:absolute;left:0;top:0;bottom:0;width:184px;display:flex;flex-direction:column;background:var(--cb-slate-50, #f8fafc);border-right:1px solid var(--cb-x-dbe3ec, #dbe3ec);font-size:10px;color:var(--cb-slate-700, #334155);z-index:4;"></div>
+        <div ref="selbar" class="cbk-selbar" style="position:absolute;left:50%;bottom:10px;transform:translateX(-50%);z-index:7;display:none;align-items:center;gap:8px;padding:5px 10px;background:var(--cb-white, #ffffff);border:1px solid var(--cb-slate-300, #cbd5e1);border-radius:8px;box-shadow:0 8px 24px rgba(15,23,42,0.18);font-size:10px;color:var(--cb-slate-900, #0f172a);white-space:nowrap;"></div>
         <div ref="grid" class="cbk-grid" tabindex="0" style="position:absolute;inset:0;overflow-y:auto;overflow-x:hidden;outline:none;">
           <div ref="pin" style="position:sticky;top:0;z-index:3;height:0;"></div>
           <div ref="sizer" style="position:relative;width:100%;"></div>
@@ -622,7 +622,7 @@ export default {
         </div>
         <div ref="review" class="cbk-review" tabindex="0" style="position:absolute;inset:0;overflow-y:auto;overflow-x:hidden;visibility:hidden;pointer-events:none;outline:none;"></div>
       </div>
-      <div ref="status" style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;pointer-events:none;font-size:11px;color:#64748b;"></div>
+      <div ref="status" style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;pointer-events:none;font-size:11px;color:var(--cb-slate-500, #64748b);"></div>
     </div>`,
   props: {
     table_url: String,
@@ -927,14 +927,14 @@ export default {
         else if (s.verdict[i] === DROP && sel.after[i]) dropped++;
       }
       if (kept || dropped) {
-        const h = el("span", "font-size:9px;color:#475569;white-space:nowrap;");
+        const h = el("span", "font-size:9px;color:var(--cb-slate-600, #475569);white-space:nowrap;");
         h.textContent = [kept ? `+${kept} kept by hand` : "", dropped ? `−${dropped} dropped by hand` : ""].filter(Boolean).join(" · ");
         box.appendChild(h);
       }
-      const line = el("span", "font-family:'IBM Plex Mono',monospace;font-size:10px;white-space:nowrap;color:#1e293b;");
+      const line = el("span", "font-family:'IBM Plex Mono',monospace;font-size:10px;white-space:nowrap;color:var(--cb-slate-800, #1e293b);");
       line.textContent = `${fin.n.toLocaleString()} of ${s.n.toLocaleString()} · ${fin.nFrames}/${this.nFrames} tomograms · ${fin.perProject.size}/${projects.length} projects`;
       box.appendChild(line);
-      const bar = el("span", "display:inline-flex;height:6px;width:120px;border-radius:3px;overflow:hidden;outline:1px solid #cbd5e1;flex:0 0 auto;");
+      const bar = el("span", "display:inline-flex;height:6px;width:120px;border-radius:3px;overflow:hidden;outline:1px solid var(--cb-slate-300, #cbd5e1);flex:0 0 auto;");
       const total = Math.max(1, fin.n);
       const shades = ["#334155", "#64748b", "#94a3b8", "#cbd5e1", "#475569", "#1e293b", "#7c8ea3", "#a8b5c4"];
       const tip = [];
@@ -953,7 +953,7 @@ export default {
       box.innerHTML = "";
       const name = (id) => ((this.subsets || []).find((x) => x.id === id) || {}).name || id;
       const chip = (text, drop) => {
-        const c = el("span", "padding:1px 6px;border-radius:5px;background:#e8eef6;border:1px solid #c9d6e5;white-space:nowrap;", "cbk-chip");
+        const c = el("span", "padding:1px 6px;border-radius:5px;background:var(--cb-x-e8eef6, #e8eef6);border:1px solid var(--cb-x-c9d6e5, #c9d6e5);white-space:nowrap;", "cbk-chip");
         c.textContent = `${text}  ✕`;
         c.onclick = () => { drop(); this.release(); };
         box.appendChild(c);
@@ -1328,7 +1328,7 @@ export default {
       const pinBox = this.$refs.pin;
       pinBox.textContent = "";
       if (pin && this.group && this.group !== "none") {
-        const p = el("div", "font-size:9px;color:#334155;background:rgba(238,242,247,0.94);padding:3px 8px;", "cbk-ghead");
+        const p = el("div", "font-size:9px;color:var(--cb-slate-700, #334155);background:rgba(238,242,247,0.94);padding:3px 8px;", "cbk-ghead");
         p.textContent = pin;
         pinBox.appendChild(p);
       }
@@ -1337,7 +1337,7 @@ export default {
         let node = this.tiles.get(key);
         if (typeof key === "string") {
           if (!node) {
-            node = el("div", `position:absolute;left:${PAD}px;right:${PAD}px;height:${HEADER_H}px;display:flex;align-items:flex-end;font-size:9px;color:#475569;cursor:pointer;`, "cbk-ghead");
+            node = el("div", `position:absolute;left:${PAD}px;right:${PAD}px;height:${HEADER_H}px;display:flex;align-items:flex-end;font-size:9px;color:var(--cb-slate-600, #475569);cursor:pointer;`, "cbk-ghead");
             // A click on a group's header selects the group.
             node.onclick = (e) => { const [a, b] = node._range; this.setPicked(Array.from(this.order.subarray(a, b)), e.ctrlKey || e.metaKey); };
             sizer.appendChild(node);
@@ -1411,7 +1411,7 @@ export default {
       if (!l.moved && Math.hypot(x - l.x0, y - l.y0) < 6) return;
       l.moved = true;
       if (!l.box) {
-        l.box = el("div", "position:absolute;border:1px solid #4e79a7;background:rgba(78,121,167,0.12);pointer-events:none;z-index:4;border-radius:3px;");
+        l.box = el("div", "position:absolute;border:1px solid var(--cb-x-4e79a7, #4e79a7);background:rgba(78,121,167,0.12);pointer-events:none;z-index:4;border-radius:3px;");
         this.$refs.sizer.appendChild(l.box);
       }
       Object.assign(l.box.style, { left: `${Math.min(x, l.x0)}px`, top: `${Math.min(y, l.y0)}px`, width: `${Math.abs(x - l.x0)}px`, height: `${Math.abs(y - l.y0)}px` });
@@ -1559,7 +1559,7 @@ export default {
         const g = x.group ? ((this.groups || []).find((y) => y.id === x.group) || {}).name || "" : "";
         if (g !== group) {
           group = g;
-          if (g) { const h = el("div", "font-size:9px;font-weight:600;color:#64748b;padding:5px 8px 1px 8px;"); h.textContent = `${g} (adding moves)`; menu.appendChild(h); }
+          if (g) { const h = el("div", "font-size:9px;font-weight:600;color:var(--cb-slate-500, #64748b);padding:5px 8px 1px 8px;"); h.textContent = `${g} (adding moves)`; menu.appendChild(h); }
         }
         const all = n === rows.length;
         const label = mode === "remove" ? `${x.name} (${n.toLocaleString()})` : x.name;
@@ -1572,7 +1572,7 @@ export default {
     },
     menuItem(menu, label, key, on, act, color) {
       const it = el("div", "display:flex;align-items:center;gap:8px;padding:3px 8px;cursor:pointer;border-radius:4px;", "cbk-mitem");
-      const mark = el("span", "width:10px;color:#16a34a;");
+      const mark = el("span", "width:10px;color:var(--cb-green-600, #16a34a);");
       mark.textContent = on ? "✓" : "";
       it.appendChild(mark);
       if (color) it.appendChild(el("span", `width:8px;height:8px;border-radius:50%;background:${color};flex:0 0 auto;`));
@@ -1580,7 +1580,7 @@ export default {
       a.textContent = label;
       it.appendChild(a);
       if (key) {
-        const k = el("span", "margin-left:auto;padding-left:16px;color:#94a3b8;font-family:'IBM Plex Mono',monospace;");
+        const k = el("span", "margin-left:auto;padding-left:16px;color:var(--cb-slate-400, #94a3b8);font-family:'IBM Plex Mono',monospace;");
         k.textContent = key;
         it.appendChild(k);
       }
@@ -1589,7 +1589,7 @@ export default {
       return it;
     },
     menuHead(menu, text) {
-      const h = el("div", "font-size:9px;font-weight:600;color:#64748b;padding:6px 8px 2px 8px;");
+      const h = el("div", "font-size:9px;font-weight:600;color:var(--cb-slate-500, #64748b);padding:6px 8px 2px 8px;");
       h.textContent = text;
       menu.appendChild(h);
     },
@@ -1606,7 +1606,7 @@ export default {
       what.textContent = `${n.toLocaleString()} selected · ${frames.size} tomogram${frames.size === 1 ? "" : "s"} · ${projects.size} project${projects.size === 1 ? "" : "s"}`;
       bar.appendChild(what);
       const btn = (text, act, style) => {
-        const b = el("span", `padding:1px 7px;border-radius:5px;border:1px solid #cbd5e1;background:#ffffff;${style || ""}`, "cbk-chip");
+        const b = el("span", `padding:1px 7px;border-radius:5px;border:1px solid var(--cb-slate-300, #cbd5e1);background:var(--cb-white, #ffffff);${style || ""}`, "cbk-chip");
         b.textContent = text;
         b.onclick = (e) => act(e, b);
         bar.appendChild(b);
@@ -1625,10 +1625,10 @@ export default {
       }
       btn("New subset…", () => this.newSubset([...this.picked]));
       btn("Make set…", () => this.$emit("subset_cmd", { cmd: "make_set_selection", uids: [...this.picked].map((r) => uidHex(this.s, r)) }));
-      btn("Keep", () => this.setVerdict([...this.picked], "keep"), "color:#15803d;");
-      btn("Drop", () => this.setVerdict([...this.picked], "drop"), "color:#b91c1c;");
+      btn("Keep", () => this.setVerdict([...this.picked], "keep"), "color:var(--cb-green-700, #15803d);");
+      btn("Drop", () => this.setVerdict([...this.picked], "drop"), "color:var(--cb-red-700, #b91c1c);");
       btn("Clear", () => this.setVerdict([...this.picked], "clear"));
-      btn("✕", () => this.pick(-1), "border-color:transparent;color:#94a3b8;");
+      btn("✕", () => this.pick(-1), "border-color:transparent;color:var(--cb-slate-400, #94a3b8);");
     },
 
     // ── The subsets rail ─────────────────────────────────────────────────────────────────────
@@ -1647,16 +1647,16 @@ export default {
       rail.innerHTML = "";
       this.railItems = new Map();
       if (!this.railOpen) {
-        const open = el("div", "padding:8px 0;text-align:center;color:#64748b;font-size:11px;", "cbk-chip");
+        const open = el("div", "padding:8px 0;text-align:center;color:var(--cb-slate-500, #64748b);font-size:11px;", "cbk-chip");
         open.textContent = "›";
         open.onclick = () => { this.railOpen = true; this.renderRail(true); };
         rail.appendChild(open);
         return;
       }
       const head = el("div", "display:flex;align-items:center;gap:6px;padding:6px 8px 4px 10px;");
-      const title = el("span", "font-weight:600;color:#1e293b;");
+      const title = el("span", "font-weight:600;color:var(--cb-slate-800, #1e293b);");
       title.textContent = "Subsets";
-      const fold = el("span", "margin-left:auto;color:#94a3b8;padding:0 4px;border-radius:3px;", "cbk-chip");
+      const fold = el("span", "margin-left:auto;color:var(--cb-slate-400, #94a3b8);padding:0 4px;border-radius:3px;", "cbk-chip");
       fold.textContent = "‹";
       fold.onclick = () => { this.railOpen = false; this.renderRail(true); };
       head.append(title, fold);
@@ -1664,12 +1664,12 @@ export default {
       const item = (id, label, color, slot) => {
         const it = el("div", "display:flex;align-items:center;gap:5px;padding:3px 6px;border-radius:5px;cursor:pointer;border-left:3px solid transparent;", "cbk-ritem");
         if (id) it.dataset.sid = id;
-        const dot = el("span", `width:8px;height:8px;border-radius:50%;flex:0 0 auto;background:${color || "transparent"};${color ? "" : "border:1px solid #94a3b8;"}`);
-        const sl = el("span", "width:8px;font-size:8px;color:#94a3b8;font-family:'IBM Plex Mono',monospace;");
+        const dot = el("span", `width:8px;height:8px;border-radius:50%;flex:0 0 auto;background:${color || "transparent"};${color ? "" : "border:1px solid var(--cb-slate-400, #94a3b8);"}`);
+        const sl = el("span", "width:8px;font-size:8px;color:var(--cb-slate-400, #94a3b8);font-family:'IBM Plex Mono',monospace;");
         sl.textContent = slot || "";
         const name = el("span", "flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;");
         name.textContent = label;
-        const cnt = el("span", "font-family:'IBM Plex Mono',monospace;font-size:9px;color:#64748b;white-space:nowrap;");
+        const cnt = el("span", "font-family:'IBM Plex Mono',monospace;font-size:9px;color:var(--cb-slate-500, #64748b);white-space:nowrap;");
         it.append(dot, sl, name, cnt);
         it.onclick = (e) => this.onRailClick(id, e);
         if (id) {
@@ -1681,7 +1681,7 @@ export default {
         this.railItems.set(id || "", { it, name, cnt, label });
         const mark = id ? this.setMark(id) : "";
         if (mark) {
-          const line = el("div", "padding:0 6px 3px 27px;font-size:8px;line-height:1.3;color:#64748b;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;");
+          const line = el("div", "padding:0 6px 3px 27px;font-size:8px;line-height:1.3;color:var(--cb-slate-500, #64748b);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;");
           line.textContent = mark;
           list.appendChild(line);
         }
@@ -1694,7 +1694,7 @@ export default {
         const g = x.group && gs.find((y) => y.id === x.group);
         if ((g ? g.id : null) !== group) {
           group = g ? g.id : null;
-          const h = el("div", "display:flex;align-items:center;gap:5px;padding:7px 6px 2px 6px;font-size:9px;font-weight:600;color:#64748b;");
+          const h = el("div", "display:flex;align-items:center;gap:5px;padding:7px 6px 2px 6px;font-size:9px;font-weight:600;color:var(--cb-slate-500, #64748b);");
           h.textContent = g ? `▣ ${g.name}` : "Subsets (may overlap)";
           if (g) {
             h.style.cursor = "context-menu";
@@ -1707,14 +1707,14 @@ export default {
       });
       for (const g of gs) {
         if (subs.some((x) => x.group === g.id)) continue;
-        const h = el("div", "padding:7px 6px 2px 6px;font-size:9px;font-weight:600;color:#64748b;cursor:context-menu;");
+        const h = el("div", "padding:7px 6px 2px 6px;font-size:9px;font-weight:600;color:var(--cb-slate-500, #64748b);cursor:context-menu;");
         h.textContent = `▣ ${g.name} (empty: put subsets in it from their menu)`;
         h.oncontextmenu = (e) => this.groupMenu(g.id, e);
         list.appendChild(h);
       }
-      const foot = el("div", "display:flex;gap:6px;padding:6px 8px;border-top:1px solid #e2e8f0;");
+      const foot = el("div", "display:flex;gap:6px;padding:6px 8px;border-top:1px solid var(--cb-slate-200, #e2e8f0);");
       const add = (text, tip, act) => {
-        const b = el("span", "padding:1px 7px;border-radius:5px;border:1px dashed #b8cce0;background:#ffffff;color:#2c4a6b;", "cbk-chip");
+        const b = el("span", "padding:1px 7px;border-radius:5px;border:1px dashed var(--cb-x-b8cce0, #b8cce0);background:var(--cb-white, #ffffff);color:var(--cb-x-2c4a6b, #2c4a6b);", "cbk-chip");
         b.textContent = text;
         b.title = tip;
         b.onclick = act;
@@ -1723,7 +1723,7 @@ export default {
       add("+ subset", "A new subset holding the selected picks (none selected: an empty one)", () => this.newSubset([...this.picked]));
       add("+ kept", "A new subset holding every pick kept now: a snapshot, not a saved filter", () => this.$emit("subset_cmd", { cmd: "new_passing" }));
       add("+ group", "A new group: subsets in it never share a pick", () => this.$emit("subset_cmd", { cmd: "new_group" }));
-      this.railReadout = el("div", "padding:4px 10px 8px 10px;font-size:9px;line-height:1.45;color:#64748b;min-height:40px;");
+      this.railReadout = el("div", "padding:4px 10px 8px 10px;font-size:9px;line-height:1.45;color:var(--cb-slate-500, #64748b);min-height:40px;");
       rail.append(head, list, foot, this.railReadout);
       this.paintRail();
     },
@@ -1740,8 +1740,8 @@ export default {
         R.cnt.textContent = `${kept.toLocaleString()}/${total.toLocaleString()}`;
         const on = id ? inc.has(id) : !inc.size && !exc.size, off = id && exc.has(id);
         const x = id ? this.subById(id) : null;
-        R.it.style.background = on ? "#e8eef6" : "";
-        R.it.style.borderLeftColor = on ? (x ? x.color : "#2c4a6b") : "transparent";
+        R.it.style.background = on ? "var(--cb-x-e8eef6, #e8eef6)" : "";
+        R.it.style.borderLeftColor = on ? (x ? x.color : "var(--cb-x-2c4a6b, #2c4a6b)") : "transparent";
         R.name.style.fontWeight = on ? "600" : "";
         R.name.style.textDecoration = off ? "line-through" : "";
         R.name.textContent = off ? `not ${R.label}` : R.label;
@@ -1808,7 +1808,7 @@ export default {
       this.menuItem(menu, "Rename…", "", false, () => this.$emit("subset_cmd", { cmd: "rename", id }));
       const sw = el("div", "display:flex;gap:4px;padding:4px 8px 4px 26px;");
       for (const c of ["#4e79a7", "#f28e2b", "#e15759", "#76b7b2", "#59a14f", "#edc948", "#b07aa1", "#ff9da7", "#9c755f"]) {
-        const d = el("span", `width:12px;height:12px;border-radius:50%;background:${c};cursor:pointer;${c === x.color ? "box-shadow:0 0 0 2px #0f172a;" : ""}`);
+        const d = el("span", `width:12px;height:12px;border-radius:50%;background:${c};cursor:pointer;${c === x.color ? "box-shadow:0 0 0 2px var(--cb-slate-900, #0f172a);" : ""}`);
         d.onclick = () => { this.closeMenu(); this.$emit("subset_cmd", { cmd: "color", id, color: c }); };
         sw.appendChild(d);
       }
@@ -1861,7 +1861,7 @@ export default {
       if (!this.s) return;
       (this.localDraft.filters || []).forEach((f, k) => box.appendChild(this.buildCard(f, k)));
       for (const name of this.charts) if (name === "pairs") box.appendChild(this.buildPairsCard());
-      const add = el("div", "align-self:center;font-size:10px;color:#2c4a6b;padding:2px 9px;border-radius:5px;border:1px dashed #b8cce0;background:#ffffff;", "cbk-chip");
+      const add = el("div", "align-self:center;font-size:10px;color:var(--cb-x-2c4a6b, #2c4a6b);padding:2px 9px;border-radius:5px;border:1px dashed var(--cb-x-b8cce0, #b8cce0);background:var(--cb-white, #ffffff);", "cbk-chip");
       add.textContent = "+ filter";
       add.title = "Filter the pool on a column; filters stack: a pick must pass every one";
       add.onclick = () => this.openAddMenu(add);
@@ -1880,11 +1880,11 @@ export default {
           this.strip.scales[f.col] = sc;
           entry.canvas = el("canvas", `width:100%;height:${HIST_H}px;display:block;cursor:crosshair;touch-action:none;`);
           entry.scale = sc;
-          entry.read = el("div", "display:flex;gap:8px;font-size:9px;color:#64748b;white-space:nowrap;min-width:0;font-family:'IBM Plex Mono',monospace;");
+          entry.read = el("div", "display:flex;gap:8px;font-size:9px;color:var(--cb-slate-500, #64748b);white-space:nowrap;min-width:0;font-family:'IBM Plex Mono',monospace;");
           card.append(entry.canvas, entry.read);
           this.wireHistogram(entry);
         }
-        entry.cov = el("div", "font-size:9px;color:#64748b;");
+        entry.cov = el("div", "font-size:9px;color:var(--cb-slate-500, #64748b);");
         card.appendChild(entry.cov);
       } else if (f.kind === "category") {
         entry.chips = el("div", "display:flex;flex-wrap:wrap;gap:3px;max-height:68px;overflow-y:auto;");
@@ -1896,18 +1896,18 @@ export default {
     // A filter's card and its head: name, range, what it keeps of the picks every other filter passes,
     // "removes N" (flips the gallery to what it removes), ✕.
     filterCard(f, k, label, tip, size) {
-      const card = el("div", `display:flex;flex-direction:column;gap:4px;padding:6px 10px 7px 10px;background:#ffffff;border:1px solid #dbe3ec;border-radius:7px;box-shadow:0 1px 2px rgba(16,42,67,0.05);${size}`, "cbk-fcard");
-      const head = el("div", "display:flex;align-items:center;gap:8px;font-size:10px;color:#475569;white-space:nowrap;min-width:0;");
-      const name = el("span", "font-weight:600;color:#1e293b;overflow:hidden;text-overflow:ellipsis;font-size:10.5px;");
+      const card = el("div", `display:flex;flex-direction:column;gap:4px;padding:6px 10px 7px 10px;background:var(--cb-white, #ffffff);border:1px solid var(--cb-x-dbe3ec, #dbe3ec);border-radius:7px;box-shadow:0 1px 2px rgba(16,42,67,0.05);${size}`, "cbk-fcard");
+      const head = el("div", "display:flex;align-items:center;gap:8px;font-size:10px;color:var(--cb-slate-600, #475569);white-space:nowrap;min-width:0;");
+      const name = el("span", "font-weight:600;color:var(--cb-slate-800, #1e293b);overflow:hidden;text-overflow:ellipsis;font-size:10.5px;");
       name.textContent = label;
       name.title = tip;
-      const range = el("span", "font-family:'IBM Plex Mono',monospace;color:#334155;");
-      const keep = el("span", "margin-left:auto;font-family:'IBM Plex Mono',monospace;color:#15803d;");
+      const range = el("span", "font-family:'IBM Plex Mono',monospace;color:var(--cb-slate-700, #334155);");
+      const keep = el("span", "margin-left:auto;font-family:'IBM Plex Mono',monospace;color:var(--cb-green-700, #15803d);");
       keep.title = "Of the picks every other filter passes, how many this one keeps";
-      const rem = el("span", "padding:0 5px;border-radius:3px;color:#b45309;font-family:'IBM Plex Mono',monospace;", "cbk-chip");
+      const rem = el("span", "padding:0 5px;border-radius:3px;color:var(--cb-amber-700, #b45309);font-family:'IBM Plex Mono',monospace;", "cbk-chip");
       rem.title = "Show only the picks this filter removes (they pass every other filter); click again to go back";
       rem.onclick = () => { this.inverted = this.inverted === k ? -1 : k; this.pairView = null; this.reorder(); this.paintStrip(); };
-      const x = el("span", "color:#94a3b8;padding:0 3px;border-radius:3px;", "cbk-chip");
+      const x = el("span", "color:var(--cb-slate-400, #94a3b8);padding:0 3px;border-radius:3px;", "cbk-chip");
       x.textContent = "✕";
       x.title = "Remove this filter";
       x.onclick = () => {
@@ -1925,10 +1925,10 @@ export default {
     buildHeatCard(f, k) {
       const tip = "σ by tomogram: one row per tomogram, the best CTF fit at the top; dark = picks every other filter passes. Click a row to drop that tomogram or bring it back, drag over rows to do it to a band (the band follows its first row), double-click to bring every tomogram back";
       const entry = this.filterCard(f, k, "σ by tomogram", tip, "flex:1 1 100%;min-width:260px;");
-      entry.scroll = el("div", `position:relative;max-height:${HEAT_BOX_H}px;overflow-y:auto;overflow-x:hidden;border-radius:3px;background:#f8fafc;`, "cbk-heat");
+      entry.scroll = el("div", `position:relative;max-height:${HEAT_BOX_H}px;overflow-y:auto;overflow-x:hidden;border-radius:3px;background:var(--cb-slate-50, #f8fafc);`, "cbk-heat");
       entry.canvas = el("canvas", "display:block;width:100%;height:0;cursor:pointer;touch-action:none;");
       entry.scroll.appendChild(entry.canvas);
-      entry.readout = el("div", "display:flex;gap:8px;font-size:9px;color:#64748b;white-space:nowrap;min-width:0;");
+      entry.readout = el("div", "display:flex;gap:8px;font-size:9px;color:var(--cb-slate-500, #64748b);white-space:nowrap;min-width:0;");
       entry.card.append(entry.scroll, entry.readout);
       entry.hover = -1;
       this.wireHeat(entry);
@@ -1951,7 +1951,7 @@ export default {
       const x = (this.sets || []).find((y) => y.id === f.set_id) || {};
       const tip = "A particle set of this project as a filter: its particles are matched to the pool's picks (by the picks a kitchen set names, otherwise by position on the same tomogram); in = only the picks it holds, not in = every other pick";
       const entry = this.filterCard(f, k, x.name || (this.setInfo[f.set_id] || {}).name || f.set_id, tip, "min-width:200px;max-width:320px;flex:0 1 260px;");
-      const line = el("div", "display:flex;align-items:center;gap:6px;font-size:9px;color:#64748b;white-space:nowrap;min-width:0;");
+      const line = el("div", "display:flex;align-items:center;gap:6px;font-size:9px;color:var(--cb-slate-500, #64748b);white-space:nowrap;min-width:0;");
       const mode = (value, text) => {
         const c = el("span", "padding:0 3px;border-radius:3px;", "cbk-chip");
         c.textContent = text;
@@ -1970,10 +1970,10 @@ export default {
       e.modes.forEach((c, i) => {
         const on = (i === 0) === (f.mode !== "out");
         c.style.fontWeight = on ? "600" : "";
-        c.style.color = on ? "#0f172a" : "";
+        c.style.color = on ? "var(--cb-slate-900, #0f172a)" : "";
       });
       e.range.textContent = "";
-      e.note.style.color = info && info.error ? "#b91c1c" : "";
+      e.note.style.color = info && info.error ? "var(--cb-red-700, #b91c1c)" : "";
       if (!info) e.note.textContent = "matching its particles…";
       else if (info.error) e.note.textContent = `could not be read: ${info.error}`;
       else {
@@ -2066,9 +2066,9 @@ export default {
       const span = (text, style) => { const x = el("span", style || ""); x.textContent = text; box.appendChild(x); return x; };
       if (e.hover >= 0 && c) {
         const code = H.codes[e.hover], fr = s.frames[code] || {};
-        span(`${fr.tomo || "?"} · ${fr.project || "?"}`, "color:#1e293b;overflow:hidden;text-overflow:ellipsis;");
+        span(`${fr.tomo || "?"} · ${fr.project || "?"}`, "color:var(--cb-slate-800, #1e293b);overflow:hidden;text-overflow:ellipsis;");
         span(`CTF ${fmt(H.ctf[code], 1)} Å · ${c.rowSel[e.hover].toLocaleString()} of ${c.rowAll[e.hover].toLocaleString()} picks pass the other filters`);
-        span(e.off[e.hover] ? "dropped: click to bring it back" : "click to drop it", `margin-left:auto;${e.off[e.hover] ? "color:#b91c1c;" : ""}`);
+        span(e.off[e.hover] ? "dropped: click to bring it back" : "click to drop it", `margin-left:auto;${e.off[e.hover] ? "color:var(--cb-red-700, #b91c1c);" : ""}`);
         return;
       }
       const sc = e.scale;
@@ -2130,16 +2130,16 @@ export default {
       if (this.pairView) this.pairView = { ...this.pairRange, ...pairOrder(this.pairs, this.pairRange.lo, this.pairRange.hi) };
     },
     buildPairsCard() {
-      const card = el("div", "display:flex;flex-direction:column;gap:2px;padding:3px 7px 4px 7px;background:#ffffff;border:1px solid #dbe3ec;border-radius:6px;box-shadow:0 1px 2px rgba(16,42,67,0.05);min-width:220px;max-width:360px;flex:0 1 300px;", "cbk-fcard");
-      const head = el("div", "display:flex;align-items:center;gap:6px;font-size:9px;color:#475569;white-space:nowrap;min-width:0;");
-      const name = el("span", "font-weight:600;color:#1e293b;overflow:hidden;text-overflow:ellipsis;");
+      const card = el("div", "display:flex;flex-direction:column;gap:2px;padding:3px 7px 4px 7px;background:var(--cb-white, #ffffff);border:1px solid var(--cb-x-dbe3ec, #dbe3ec);border-radius:6px;box-shadow:0 1px 2px rgba(16,42,67,0.05);min-width:220px;max-width:360px;flex:0 1 300px;", "cbk-fcard");
+      const head = el("div", "display:flex;align-items:center;gap:6px;font-size:9px;color:var(--cb-slate-600, #475569);white-space:nowrap;min-width:0;");
+      const name = el("span", "font-weight:600;color:var(--cb-slate-800, #1e293b);overflow:hidden;text-overflow:ellipsis;");
       name.textContent = "pair distances";
       name.title = "Distances between the kept picks of each tomogram, up to twice the species' diameter (the line marks Ø, the dashed one Ø/2). Pairs closer than Ø are one particle picked twice or two touching: drag across the histogram to choose a band, then show its pairs side by side in the gallery. A chart: it filters nothing";
-      const range = el("span", "font-family:'IBM Plex Mono',monospace;color:#334155;");
-      const show = el("span", "margin-left:auto;padding:0 4px;border-radius:3px;color:#475569;", "cbk-chip");
+      const range = el("span", "font-family:'IBM Plex Mono',monospace;color:var(--cb-slate-700, #334155);");
+      const show = el("span", "margin-left:auto;padding:0 4px;border-radius:3px;color:var(--cb-slate-600, #475569);", "cbk-chip");
       show.title = "Show the pairs in the band side by side in the gallery, closest first; click again to go back";
       show.onclick = () => this.togglePairView();
-      const x = el("span", "color:#94a3b8;padding:0 3px;border-radius:3px;", "cbk-chip");
+      const x = el("span", "color:var(--cb-slate-400, #94a3b8);padding:0 3px;border-radius:3px;", "cbk-chip");
       x.textContent = "✕";
       x.title = "Close this chart";
       x.onclick = () => {
@@ -2150,7 +2150,7 @@ export default {
       };
       head.append(name, range, show, x);
       const canvas = el("canvas", "width:100%;height:30px;display:block;cursor:crosshair;touch-action:none;");
-      const foot = el("div", "font-size:9px;color:#64748b;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;");
+      const foot = el("div", "font-size:9px;color:var(--cb-slate-500, #64748b);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;");
       card.append(head, canvas, foot);
       const entry = { chart: "pairs", card, range, show, canvas, foot };
       this.wirePairs(entry);
@@ -2246,7 +2246,7 @@ export default {
         const wrap = el("label", "display:inline-flex;align-items:center;gap:3px;white-space:nowrap;");
         const t = el("span");
         t.textContent = label;
-        const inp = el("input", "width:52px;height:16px;font-size:10px;font-family:'IBM Plex Mono',monospace;border:1px solid #cbd5e1;border-radius:4px;padding:0 4px;background:#fff;color:#0f172a;", "cbk-num");
+        const inp = el("input", "width:52px;height:16px;font-size:10px;font-family:'IBM Plex Mono',monospace;border:1px solid var(--cb-slate-300, #cbd5e1);border-radius:4px;padding:0 4px;background:var(--cb-white, #fff);color:var(--cb-slate-900, #0f172a);", "cbk-num");
         inp.type = "number";
         inp.min = "0";
         inp.step = step;
@@ -2261,7 +2261,7 @@ export default {
         wrap.append(t, inp, u);
         return wrap;
       };
-      const then = el("span", "color:#64748b;white-space:nowrap;");
+      const then = el("span", "color:var(--cb-slate-500, #64748b);white-space:nowrap;");
       then.textContent = "then, per tomogram:";
       line.append(then, field("no two closer than", "nn_a", "Å", "10"), field("· at most", "top_n", "best", "1"));
     },
@@ -2277,7 +2277,7 @@ export default {
         if (used.has(c.name)) continue;
         if (c.group !== group) {
           group = c.group;
-          const g = el("div", "font-size:9px;font-weight:600;color:#64748b;padding:6px 8px 2px 8px;");
+          const g = el("div", "font-size:9px;font-weight:600;color:var(--cb-slate-500, #64748b);padding:6px 8px 2px 8px;");
           g.textContent = group;
           menu.appendChild(g);
         }
@@ -2285,7 +2285,7 @@ export default {
         const a = el("span");
         const tomos = c.name === "frame"; // the reconstructions: the σ-by-tomogram strip
         a.textContent = tomos ? "tomograms (σ by tomogram)" : c.label + (c.unit && c.unit !== "σ" ? ` (${c.unit})` : "");
-        const b = el("span", "margin-left:auto;color:#64748b;font-family:'IBM Plex Mono',monospace;white-space:nowrap;");
+        const b = el("span", "margin-left:auto;color:var(--cb-slate-500, #64748b);font-family:'IBM Plex Mono',monospace;white-space:nowrap;");
         b.textContent = tomos ? `${(c.categories || []).length.toLocaleString()} tomograms` : c.coverage < s.n ? `${c.coverage.toLocaleString()} of ${s.n.toLocaleString()}` : "all rows";
         item.append(a, b);
         item.onclick = () => {
@@ -2301,7 +2301,7 @@ export default {
       }
       const sets = (this.sets || []).filter((x) => !(this.localDraft.filters || []).some((f) => f.kind === "set" && f.set_id === x.id));
       if (sets.length) {
-        const g = el("div", "font-size:9px;font-weight:600;color:#64748b;padding:6px 8px 2px 8px;");
+        const g = el("div", "font-size:9px;font-weight:600;color:var(--cb-slate-500, #64748b);padding:6px 8px 2px 8px;");
         g.textContent = "Particle sets of this project (in or not in)";
         menu.appendChild(g);
       }
@@ -2309,7 +2309,7 @@ export default {
         const item = el("div", "display:flex;gap:12px;padding:3px 8px;cursor:pointer;border-radius:4px;", "cbk-mitem");
         const a = el("span");
         a.textContent = x.name;
-        const b = el("span", "margin-left:auto;color:#64748b;font-family:'IBM Plex Mono',monospace;white-space:nowrap;");
+        const b = el("span", "margin-left:auto;color:var(--cb-slate-500, #64748b);font-family:'IBM Plex Mono',monospace;white-space:nowrap;");
         b.textContent = `${(x.n || 0).toLocaleString()} ${x.level === "extracted" ? "particles" : "coordinates"}`;
         item.append(a, b);
         item.onclick = () => {
@@ -2320,12 +2320,12 @@ export default {
         menu.appendChild(item);
       }
       if (!this.charts.includes("pairs")) {
-        const g = el("div", "font-size:9px;font-weight:600;color:#64748b;padding:6px 8px 2px 8px;");
+        const g = el("div", "font-size:9px;font-weight:600;color:var(--cb-slate-500, #64748b);padding:6px 8px 2px 8px;");
         g.textContent = "Charts (they show, they never filter)";
         const item = el("div", "display:flex;gap:12px;padding:3px 8px;cursor:pointer;border-radius:4px;", "cbk-mitem");
         const a = el("span");
         a.textContent = "pair distances in each tomogram";
-        const b = el("span", "margin-left:auto;color:#64748b;font-family:'IBM Plex Mono',monospace;white-space:nowrap;");
+        const b = el("span", "margin-left:auto;color:var(--cb-slate-500, #64748b);font-family:'IBM Plex Mono',monospace;white-space:nowrap;");
         b.textContent = this.diameter_a > 0 ? `to ${Math.round(2 * this.diameter_a)} Å` : "no diameter";
         item.append(a, b);
         item.onclick = () => {
@@ -2350,7 +2350,7 @@ export default {
       this.closeMenu();
       const rows = [...this.picked], many = rows.length > 1, v = this.s.verdict[row];
       const menu = el("div", `${MENU_STYLE}min-width:220px;max-width:380px;`, "cbk-menu");
-      const head = el("div", "padding:3px 8px 7px 8px;font-size:9px;line-height:1.5;color:#475569;white-space:pre-line;");
+      const head = el("div", "padding:3px 8px 7px 8px;font-size:9px;line-height:1.5;color:var(--cb-slate-600, #475569);white-space:pre-line;");
       head.textContent = many ? `${rows.length.toLocaleString()} selected picks` : this.tileText(row) + (t.dataset.reason ? `\n${t.dataset.reason}` : "");
       menu.appendChild(head);
       this.menuItem(menu, "Keep by hand", "k", !many && v === KEEP, () => this.setVerdict(rows, "keep"));
@@ -2477,10 +2477,10 @@ export default {
           if (c < n) {
             const t = el("span");
             t.textContent = `${(n - c).toLocaleString()} of ${n.toLocaleString()} have no value: `;
-            const k = el("span", `padding:0 2px;border-radius:3px;${f.keep_missing !== false ? "font-weight:600;color:#0f172a;" : ""}`, "cbk-chip");
+            const k = el("span", `padding:0 2px;border-radius:3px;${f.keep_missing !== false ? "font-weight:600;color:var(--cb-slate-900, #0f172a);" : ""}`, "cbk-chip");
             k.textContent = "keep";
             k.onclick = () => { f.keep_missing = true; this.release(); };
-            const d = el("span", `padding:0 2px;border-radius:3px;${f.keep_missing === false ? "font-weight:600;color:#b91c1c;" : ""}`, "cbk-chip");
+            const d = el("span", `padding:0 2px;border-radius:3px;${f.keep_missing === false ? "font-weight:600;color:var(--cb-red-700, #b91c1c);" : ""}`, "cbk-chip");
             d.textContent = "drop";
             d.onclick = () => { f.keep_missing = false; this.release(); };
             e.cov.append(t, k, document.createTextNode(" | "), d);
@@ -2547,7 +2547,7 @@ export default {
       const v = (x) => `${fmt(x, Math.abs(sc.hi - sc.lo) < 10 ? 2 : 0)}${unit && unit !== "%" ? ` ${unit}` : unit}`;
       if (e.hoverBin != null && e.hist) {
         const b = e.hoverBin, w = (sc.hi - sc.lo) / sc.bins;
-        span(`${v(sc.lo + b * w)} – ${v(sc.lo + (b + 1) * w)}`, "color:#1e293b;");
+        span(`${v(sc.lo + b * w)} – ${v(sc.lo + (b + 1) * w)}`, "color:var(--cb-slate-800, #1e293b);");
         span(`${e.hist.all[b].toLocaleString()} picks · ${e.hist.sel[b].toLocaleString()} pass the other filters`, "margin-left:auto;");
         return;
       }
@@ -2570,7 +2570,7 @@ export default {
       for (const [c, n] of shown) {
         const name = names[c] === undefined ? "?" : names[c];
         const on = allowed.has(name);
-        const chip = el("span", `font-size:10px;padding:1px 5px;border-radius:4px;outline:1px solid ${on ? "#2c4a6b" : "#cbd5e1"};color:${on ? "#0f172a" : "#94a3b8"};`, "cbk-chip");
+        const chip = el("span", `font-size:10px;padding:1px 5px;border-radius:4px;outline:1px solid ${on ? "var(--cb-x-2c4a6b, #2c4a6b)" : "var(--cb-slate-300, #cbd5e1)"};color:${on ? "var(--cb-slate-900, #0f172a)" : "var(--cb-slate-400, #94a3b8)"};`, "cbk-chip");
         chip.textContent = `${name.length > 28 ? name.slice(0, 12) + "…" + name.slice(-14) : name} ${(pass.get(c) || 0).toLocaleString()}/${n.toLocaleString()}`;
         chip.title = name;
         chip.onclick = () => {
@@ -2582,12 +2582,12 @@ export default {
         e.chips.appendChild(chip);
       }
       if (list.length > 12) {
-        const more = el("span", "font-size:9px;color:#2c4a6b;", "cbk-chip");
+        const more = el("span", "font-size:9px;color:var(--cb-x-2c4a6b, #2c4a6b);", "cbk-chip");
         more.textContent = e.expanded ? "fewer" : `+${list.length - 12} more`;
         more.onclick = () => { e.expanded = !e.expanded; this.paintChips(e, others); };
         e.chips.appendChild(more);
       }
-      const all = el("span", "font-size:9px;color:#2c4a6b;", "cbk-chip");
+      const all = el("span", "font-size:9px;color:var(--cb-x-2c4a6b, #2c4a6b);", "cbk-chip");
       all.textContent = allowed.size ? "none" : "all";
       all.onclick = () => { f.allowed = allowed.size ? [] : names.slice(); this.release(); };
       e.chips.appendChild(all);
@@ -2624,7 +2624,7 @@ export default {
       if (key === this.edgeKey) return;
       this.edgeKey = key;
       box.innerHTML = "";
-      const label = el("span", "font-size:9px;color:#64748b;margin-right:4px;white-space:nowrap;");
+      const label = el("span", "font-size:9px;color:var(--cb-slate-500, #64748b);margin-right:4px;white-space:nowrap;");
       label.textContent = `edge of the cut at ${fmt(cut, 2)} σ`;
       label.title = "The six cutouts just below the σ cut (faint) and the six just above it, among the picks every other filter passes";
       box.appendChild(label);
@@ -2693,11 +2693,11 @@ export default {
       if (!this.loupe_url || !this.loupe_png_url || !this.s) return;
       this.closeLoupe();
       const s = this.s, uid = uidHex(s, row), fr = s.frames[s.cat.frame[row]] || {};
-      const card = el("div", "position:absolute;left:50%;top:40px;transform:translateX(-50%);z-index:20;display:flex;flex-direction:column;gap:6px;padding:8px 10px 10px 10px;background:#ffffff;border:1px solid #cbd5e1;border-radius:8px;box-shadow:0 12px 32px rgba(15,23,42,0.22);font-size:10px;color:#334155;", "cbk-loupe");
+      const card = el("div", "position:absolute;left:50%;top:40px;transform:translateX(-50%);z-index:20;display:flex;flex-direction:column;gap:6px;padding:8px 10px 10px 10px;background:var(--cb-white, #ffffff);border:1px solid var(--cb-slate-300, #cbd5e1);border-radius:8px;box-shadow:0 12px 32px rgba(15,23,42,0.22);font-size:10px;color:var(--cb-slate-700, #334155);", "cbk-loupe");
       const head = el("div", "display:flex;align-items:center;gap:10px;white-space:nowrap;");
-      const title = el("span", "font-weight:600;color:#0f172a;overflow:hidden;text-overflow:ellipsis;max-width:560px;");
+      const title = el("span", "font-weight:600;color:var(--cb-slate-900, #0f172a);overflow:hidden;text-overflow:ellipsis;max-width:560px;");
       title.textContent = `${fr.tomo || "?"} · ${fr.project || "?"} · σ ${fmt(s.num.sigma[row], 2)} · LCC ${fmt(s.num.lcc[row], 3)}`;
-      const x = el("span", "margin-left:auto;color:#94a3b8;padding:0 4px;border-radius:3px;", "cbk-chip");
+      const x = el("span", "margin-left:auto;color:var(--cb-slate-400, #94a3b8);padding:0 4px;border-radius:3px;", "cbk-chip");
       x.textContent = "✕";
       x.title = "Close (Escape, space)";
       x.onclick = () => this.closeLoupe();
@@ -2724,12 +2724,12 @@ export default {
         body.textContent = info.error;
         return;
       }
-      const cols = el("div", "display:grid;grid-template-columns:repeat(3,240px);gap:4px;font-size:9px;color:#64748b;");
+      const cols = el("div", "display:grid;grid-template-columns:repeat(3,240px);gap:4px;font-size:9px;color:var(--cb-slate-500, #64748b);");
       for (const t of ["X/Y", "X/Z", "Y/Z"]) { const c = el("span"); c.textContent = t; cols.appendChild(c); }
-      const img = el("img", "display:block;width:728px;border-radius:4px;background:#e2e8f0;");
+      const img = el("img", "display:block;width:728px;border-radius:4px;background:var(--cb-slate-200, #e2e8f0);");
       img.draggable = false;
       img.src = this.url(this.loupe_png_url.replace("{name}", info.name));
-      const foot = el("div", "font-size:9px;color:#475569;line-height:1.5;");
+      const foot = el("div", "font-size:9px;color:var(--cb-slate-600, #475569);line-height:1.5;");
       const a = info.angles;
       foot.textContent = `above: the reconstruction, ${info.box_a} Å box, ${info.slab_a} Å slabs through the pick · ` + (info.template ? `below: ${info.template_name} turned to the matched angles (rot ${fmt(a[0], 1)}°, tilt ${fmt(a[1], 1)}°, psi ${fmt(a[2], 1)}°), the same box and slabs` : `no template: ${info.why}`);
       body.append(cols, img, foot);
@@ -2764,19 +2764,19 @@ export default {
       box.innerHTML = "";
       this.reviewTiles.clear();
       if (!this.s) return;
-      const head = el("div", "position:sticky;top:0;z-index:3;display:flex;flex-direction:column;gap:3px;padding:8px 10px 6px 10px;background:rgba(238,242,247,0.96);font-size:10px;color:#334155;");
+      const head = el("div", "position:sticky;top:0;z-index:3;display:flex;flex-direction:column;gap:3px;padding:8px 10px 6px 10px;background:rgba(238,242,247,0.96);font-size:10px;color:var(--cb-slate-700, #334155);");
       const line = el("div", "display:flex;align-items:center;gap:10px;flex-wrap:wrap;");
       const what = el("span");
       what.textContent = st
         ? `${(st.sample.kept.length + st.sample.removed.length).toLocaleString()} picks, kept and removed by the cut in equal parts, shuffled. Click a tile: good, again: bad, again: no label (keys g, b, u).`
         : "Up to 50 picks the cut keeps and 50 it removes, shown blind: labelling them good or bad estimates the cut's precision and what it loses.";
-      const btn = el("span", "padding:1px 8px;border-radius:5px;border:1px solid #94a3b8;background:#ffffff;color:#1e293b;white-space:nowrap;", "cbk-chip");
+      const btn = el("span", "padding:1px 8px;border-radius:5px;border:1px solid var(--cb-slate-400, #94a3b8);background:var(--cb-white, #ffffff);color:var(--cb-slate-800, #1e293b);white-space:nowrap;", "cbk-chip");
       btn.textContent = st ? "New sample for this cut" : "Draw a sample for this cut";
       btn.title = "A new random sample of the picks this cut keeps and removes; the labels of the old one are dropped";
       btn.onclick = () => this.newReview();
       line.append(what, btn);
-      this.reviewLine = el("div", "font-family:'IBM Plex Mono',monospace;font-size:10px;color:#0f172a;");
-      this.reviewNote = el("div", "font-size:9px;color:#b45309;");
+      this.reviewLine = el("div", "font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--cb-slate-900, #0f172a);");
+      this.reviewNote = el("div", "font-size:9px;color:var(--cb-amber-700, #b45309);");
       head.append(line, this.reviewLine, this.reviewNote);
       box.appendChild(head);
       if (st) {
@@ -2798,7 +2798,7 @@ export default {
             t.style.position = "relative";
             if (this.hasCutout(row)) want.push(uid);
           }
-          t._mark = el("span", "position:absolute;right:3px;top:1px;font-size:12px;font-weight:700;text-shadow:0 0 2px #000;pointer-events:none;");
+          t._mark = el("span", "position:absolute;right:3px;top:1px;font-size:12px;font-weight:700;text-shadow:0 0 2px var(--cb-black, #000);pointer-events:none;");
           t.appendChild(t._mark);
           wrap.appendChild(t);
           this.reviewTiles.set(uid, t);
@@ -2993,7 +2993,7 @@ export default {
       this.requestTiles();
     },
     makeFold(r) {
-      const node = el("div", `position:absolute;left:${r.x}px;width:${r.w}px;top:${r.y}px;height:${r.h}px;display:flex;align-items:center;padding:0 8px;font-size:10px;color:#475569;border-radius:6px;box-sizing:border-box;`, "cbk-chip");
+      const node = el("div", `position:absolute;left:${r.x}px;width:${r.w}px;top:${r.y}px;height:${r.h}px;display:flex;align-items:center;padding:0 8px;font-size:10px;color:var(--cb-slate-600, #475569);border-radius:6px;box-sizing:border-box;`, "cbk-chip");
       node.onclick = () => { this.showEmpty = !this.showEmpty; this.buildStream(); };
       const R = { node, fold: true, r };
       this.placeStreamRow(R, r);
@@ -3001,7 +3001,7 @@ export default {
     },
     makeStreamRow(r) {
       const node = el("div", `position:absolute;left:${r.x}px;top:${r.y}px;width:${r.w}px;height:${r.h}px;box-sizing:border-box;`, "cbk-srow");
-      const title = el("div", `position:absolute;left:${ROW_PAD + 2}px;right:${ROW_PAD}px;top:${ROW_PAD - 1}px;height:${TITLE_H}px;line-height:${TITLE_H}px;font-size:10px;color:#334155;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;`, "cbk-ttl");
+      const title = el("div", `position:absolute;left:${ROW_PAD + 2}px;right:${ROW_PAD}px;top:${ROW_PAD - 1}px;height:${TITLE_H}px;line-height:${TITLE_H}px;font-size:10px;color:var(--cb-slate-700, #334155);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;`, "cbk-ttl");
       const body = el("div", `position:absolute;left:${ROW_PAD}px;right:${ROW_PAD}px;top:${ROW_PAD + TITLE_H + 4}px;bottom:${ROW_PAD}px;`);
       const card = el("div", "position:absolute;left:0;top:0;display:flex;flex-direction:column;gap:4px;");
       const panes = [];
@@ -3009,7 +3009,7 @@ export default {
         const pane = el("div", "", "cbk-pane");
         const img = el("img", "position:absolute;inset:0;width:100%;height:100%;display:block;");
         img.draggable = false;
-        const note = el("div", "position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:9px;color:#94a3b8;text-align:center;padding:4px;");
+        const note = el("div", "position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:9px;color:var(--cb-slate-400, #94a3b8);text-align:center;padding:4px;");
         const cv = el("canvas", "position:absolute;inset:0;width:100%;height:100%;");
         pane.append(img, note, cv);
         card.appendChild(pane);
@@ -3146,7 +3146,7 @@ export default {
       if (!B.moved && Math.hypot(B.x1 - B.x0, B.y1 - B.y0) < 4) return;
       B.moved = true;
       if (!B.box) {
-        B.box = el("div", "position:absolute;border:1px solid #f59e0b;background:rgba(245,158,11,0.14);pointer-events:none;");
+        B.box = el("div", "position:absolute;border:1px solid var(--cb-amber-500, #f59e0b);background:rgba(245,158,11,0.14);pointer-events:none;");
         B.R.panes[0].pane.appendChild(B.box);
       }
       Object.assign(B.box.style, { left: `${Math.min(B.x0, B.x1)}px`, top: `${Math.min(B.y0, B.y1)}px`, width: `${Math.abs(B.x1 - B.x0)}px`, height: `${Math.abs(B.y1 - B.y0)}px` });

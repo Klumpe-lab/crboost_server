@@ -201,7 +201,11 @@ def render_warp_strip(
             tile = ui.element("div").classes("cb-warp-tile" + (" over" if over else ""))
             tile.style(
                 "display: flex; flex-direction: column; align-items: center; border-radius: var(--cb-r-md, 4px); "
-                + (f"box-shadow: 0 0 0 2px {SHIFT_COLOR};" if over else "box-shadow: 0 0 0 1px #dbe3ec;")
+                + (
+                    f"box-shadow: 0 0 0 2px {SHIFT_COLOR};"
+                    if over
+                    else "box-shadow: 0 0 0 1px var(--cb-x-dbe3ec, #dbe3ec);"
+                )
             )
             tile.props["title"] = _tip(tilt, numbers[k])
             with tile:

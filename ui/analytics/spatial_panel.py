@@ -156,7 +156,7 @@ class SpatialPanel:
 
     @staticmethod
     def _title(text: str, tip: str) -> None:
-        with ui.label(text).style(f"{SANS} font-size: 9px; font-weight: 600; color: #334155;"):
+        with ui.label(text).style(f"{SANS} font-size: 9px; font-weight: 600; color: var(--cb-slate-700, #334155);"):
             ui.tooltip(tip).style(TOOLTIP_STYLE)
 
     def _render_summary(self) -> None:

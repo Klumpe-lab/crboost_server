@@ -54,15 +54,15 @@ class FunnelLine:
 
     def _cut_step(self) -> None:
         with ui.element("div").style("display: flex; flex-direction: column;"):
-            self._cut_label = ui.label("").style(f"{SANS} font-size: 9px; color: #94a3b8;")
-            self._cut_value = ui.label("").style(f"{MONO} font-size: 11px; color: #1e293b;")
+            self._cut_label = ui.label("").style(f"{SANS} font-size: 9px; color: var(--cb-slate-400, #94a3b8);")
+            self._cut_value = ui.label("").style(f"{MONO} font-size: 11px; color: var(--cb-slate-800, #1e293b);")
             ui.tooltip("Candidates at or above the cut on screen. Not a set until you make one.").style(TOOLTIP_STYLE)
         self.set_cut(self.cut)
 
     def _step(self, step: FunnelStep) -> None:
         with ui.element("div").style("display: flex; flex-direction: column;"):
-            ui.label(step.label).style(f"{SANS} font-size: 9px; color: #94a3b8;")
-            value = ui.label(step.value).style(f"{MONO} font-size: 11px; color: #1e293b;")
+            ui.label(step.label).style(f"{SANS} font-size: 9px; color: var(--cb-slate-400, #94a3b8);")
+            value = ui.label(step.value).style(f"{MONO} font-size: 11px; color: var(--cb-slate-800, #1e293b);")
             if step.instance_id and self._open_job is not None:
                 value.style("cursor: pointer; text-decoration: underline dotted;")
                 value.on("click", lambda _e, i=step.instance_id: self._open_job(i))

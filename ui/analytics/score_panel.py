@@ -136,9 +136,9 @@ class ScorePanel:
                     "every project and for every species."
                 ).style(TOOLTIP_STYLE)
             for z, n, n_tomo in analytics.ladder_totals(self.cand_rows):
-                ui.label(f"≥ {z:g}σ {n:,} ({n_tomo})").style(f"{MONO} font-size: 10px; color: #334155;").tooltip(
-                    f"{n:,} picks at or above {z:g}σ, in {n_tomo} tomograms"
-                )
+                ui.label(f"≥ {z:g}σ {n:,} ({n_tomo})").style(
+                    f"{MONO} font-size: 10px; color: var(--cb-slate-700, #334155);"
+                ).tooltip(f"{n:,} picks at or above {z:g}σ, in {n_tomo} tomograms")
 
     def _render_cut_row(self) -> None:
         lo = min((float(c["cutoff_sigma"]) for c in self.cand_rows if c.get("cutoff_sigma") is not None), default=0.0)
@@ -155,7 +155,7 @@ class ScorePanel:
                 "cutoff), so a cut there keeps everything. The cut chooses what you look at; it changes no file.",
                 on_change=self._on_cut_field,
             )
-            self._cut_text = ui.label("").style(f"{MONO} font-size: 10px; color: #1e293b;")
+            self._cut_text = ui.label("").style(f"{MONO} font-size: 10px; color: var(--cb-slate-800, #1e293b);")
             with ui.label("").style(f"{SANS} font-size: 10px; color: {WARN_COLOR};") as capped:
                 self._capped_tip = ui.tooltip("").style(TOOLTIP_STYLE)
             self._capped_text = capped
@@ -171,15 +171,15 @@ class ScorePanel:
     def _render_charts(self) -> None:
         with ui.element("div").style("display: flex; gap: 14px; flex-wrap: wrap; min-width: 0; width: 100%;"):
             with ui.element("div").style(f"flex: 1 1 280px; min-width: 0; {CHART_CELL_STYLE}"):
-                ui.label("score histogram").style(f"{SANS} font-size: 9px; font-weight: 600; color: #334155;").tooltip(
-                    HIST_TIP
-                )
+                ui.label("score histogram").style(
+                    f"{SANS} font-size: 9px; font-weight: 600; color: var(--cb-slate-700, #334155);"
+                ).tooltip(HIST_TIP)
                 self._hist = ui.echart(self._hist_options(), on_point_click=self._on_hist_click).style(
                     f"height: {CHART_PX}px; width: 100%;"
                 )
             with ui.element("div").style(f"flex: 1 1 280px; min-width: 0; {CHART_CELL_STYLE}"):
                 ui.label("picks ≥ z vs Gaussian noise").style(
-                    f"{SANS} font-size: 9px; font-weight: 600; color: #334155;"
+                    f"{SANS} font-size: 9px; font-weight: 600; color: var(--cb-slate-700, #334155);"
                 ).tooltip(SURVIVAL_TIP)
                 self._surv = ui.echart(self._surv_options()).style(f"height: {CHART_PX}px; width: 100%;")
 

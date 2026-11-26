@@ -59,8 +59,14 @@ _MARK_STYLE = (
     "display: inline-flex; align-items: center; flex-shrink: 0; border-radius: var(--cb-r-sm, 3px); padding: 0 6px; "
     "font: 600 9px 'IBM Plex Sans', sans-serif; line-height: 16px; white-space: nowrap; "
 )
-_MARK_INFO = _MARK_STYLE + "background: #edf4fb; border: 1px solid #c9dbee; color: #1f4e79;"
-_MARK_WARM = _MARK_STYLE + "background: #fff7e6; border: 1px solid #f3d9a4; color: #8a5a00;"
+_MARK_INFO = _MARK_STYLE + (
+    "background: var(--cb-x-edf4fb, #edf4fb); border: 1px solid var(--cb-x-c9dbee, #c9dbee); "
+    "color: var(--cb-x-1f4e79, #1f4e79);"
+)
+_MARK_WARM = _MARK_STYLE + (
+    "background: var(--cb-x-fff7e6, #fff7e6); border: 1px solid var(--cb-x-f3d9a4, #f3d9a4); "
+    "color: var(--cb-x-8a5a00, #8a5a00);"
+)
 _SUBMITTER_STYLE = _NUMBER_STYLE + " white-space: nowrap; flex-shrink: 0; cursor: default;"
 
 
@@ -118,7 +124,7 @@ def create_save_handler(ui_mgr: UIStateManager) -> Callable:
 # user can drag taller; its view scrolls inside it.
 _LAZY_BOX_STYLE = (
     "width: 100%; min-height: 140px; resize: vertical; overflow: hidden; "
-    "display: flex; flex-direction: column; background: #fff; border-radius: var(--cb-r-md, 4px); "
+    "display: flex; flex-direction: column; background: var(--cb-white, #fff); border-radius: var(--cb-r-md, 4px); "
     "outline: 1px solid var(--cb-fold-line, #dbe3ec); outline-offset: -1px;"
 )
 _BOX_PX = 360
@@ -246,7 +252,7 @@ def _render_job_page(
     active = ui_mgr.get_job_ui_state(instance_id).active_monitor_tab
     # cb-scroll-tight drops the scroll area's own 1 rem padding, so the panels' left edges line up with
     # the view's title and the job's line above them (both 14 px in). The cb-job* classes place each
-    # section in the two-column grid the styles lay a wide page out in (ui/dashboard/css.py `_THEME_CSS`).
+    # section in the two-column grid the styles lay a wide page out in (ui/dashboard/css.py `_CHROME_CSS`).
     with ui.scroll_area().classes("w-full h-full cb-scroll-tight cb-jobscroll"):
         with ui.column().classes("w-full cb-jobpage").style("padding: 4px 14px 16px; gap: 14px;") as page:
 

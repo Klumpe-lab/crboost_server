@@ -24,11 +24,14 @@ _SANS = "font-family: 'IBM Plex Sans', sans-serif;"
 # Only the filename is drawn. It is the flexing cell in a table row, so it ellipsises
 # rather than pushing the columns beside it off screen; the directory shows on hover only.
 _NAME_STYLE = (
-    f"{_MONO} font-size: 10px; font-weight: 500; color: #1e293b; flex: 1 1 0; min-width: 0; "
+    f"{_MONO} font-size: 10px; font-weight: 500; color: var(--cb-slate-800, #1e293b); flex: 1 1 0; min-width: 0; "
     "overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"
 )
-_EMPTY_STYLE = f"{_SANS} font-size: 10px; color: #94a3b8; font-style: italic;"
-_LINK_STYLE = f"{_SANS} font-size: 10px; color: #6366f1; cursor: pointer; text-decoration: underline dotted;"
+_EMPTY_STYLE = f"{_SANS} font-size: 10px; color: var(--cb-slate-400, #94a3b8); font-style: italic;"
+_LINK_STYLE = (
+    f"{_SANS} font-size: 10px; color: var(--cb-indigo-500, #6366f1); cursor: pointer; "
+    "text-decoration: underline dotted;"
+)
 
 
 def render_open_link(on_open: Callable[[], None], label: str = "open ↗", *, tooltip: str | None = None) -> None:

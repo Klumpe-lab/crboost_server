@@ -16,16 +16,16 @@ from ui.components.segmented import render_segmented
 from ui.job_plugins._field_styles import section_head
 from ui.styles import MONO, SANS as FONT
 
-CLR_HEADING = "#0f172a"
-CLR_LABEL = "#475569"
-CLR_SUBLABEL = "#94a3b8"
-CLR_GHOST = "#cbd5e1"
-CLR_BORDER = "#e2e8f0"
+CLR_HEADING = "var(--cb-slate-900, #0f172a)"
+CLR_LABEL = "var(--cb-slate-600, #475569)"
+CLR_SUBLABEL = "var(--cb-slate-400, #94a3b8)"
+CLR_GHOST = "var(--cb-slate-300, #cbd5e1)"
+CLR_BORDER = "var(--cb-slate-200, #e2e8f0)"
 CLR_SUCCESS = "#0d9488"
 CLR_ERROR = "#be4343"
 CLR_WARN = "#d97706"
-CLR_WARN_BG = "#fffbeb"
-CLR_POS_BG = "#f1f5f9"
+CLR_WARN_BG = "var(--cb-amber-50, #fffbeb)"
+CLR_POS_BG = "var(--cb-slate-100, #f1f5f9)"
 
 # Per-category colors for warnings and flash highlights
 CATEGORY_COLORS = {
@@ -144,7 +144,8 @@ def build_dataset_overview_panel(
         ui.column()
         .classes("w-full gap-0")
         .style(
-            f"border: 1px solid {CLR_BORDER}; border-radius: var(--cb-r-lg, 6px); background: #ffffff; "
+            f"border: 1px solid {CLR_BORDER}; border-radius: var(--cb-r-lg, 6px); "
+            "background: var(--cb-white, #ffffff); "
             "min-width: 0; max-height: 420px; overflow-y: auto; overflow-x: auto;"
         )
     ):
@@ -154,7 +155,7 @@ def build_dataset_overview_panel(
             .classes("w-full")
             .style(
                 f"display: grid; grid-template-columns: {COL_WIDTHS}; min-width: max-content; "
-                f"border-bottom: 1px solid {CLR_BORDER}; background: #f8fafc; "
+                f"border-bottom: 1px solid {CLR_BORDER}; background: var(--cb-slate-50, #f8fafc); "
                 "position: sticky; top: 0; z-index: 1;"
             )
         ):
@@ -191,7 +192,8 @@ def _flash_row(row_el: ui.element, highlight_color: str):
     """Scroll to a row element and flash-highlight it."""
     row_el.run_method("scrollIntoView", {"behavior": "smooth", "block": "center"})
     row_el.style(add=f"background: {highlight_color} !important; transition: background 0.3s;")
-    ui.timer(1.5, lambda: row_el.style(add="background: white !important; transition: background 0.8s;"), once=True)
+    settle = "background: var(--cb-white, white) !important; transition: background 0.8s;"
+    ui.timer(1.5, lambda: row_el.style(add=settle), once=True)
 
 
 def _bucket_by_param(overview, param_key):
@@ -453,7 +455,7 @@ def _build_position_group(pos, overview, refresh_all, row_registry):
         with ts_container_ref[0]:
             for ts_idx, ts in enumerate(pos.tilt_series):
                 is_last = ts_idx == len(pos.tilt_series) - 1
-                border = "" if is_last else "border-bottom: 1px solid #f1f5f9;"
+                border = "" if is_last else "border-bottom: 1px solid var(--cb-slate-100, #f1f5f9);"
                 a_lo, a_hi = ts.angle_range
                 ts_angle = f"{a_lo:+.1f}\u00b0..{a_hi:+.1f}\u00b0"
 
@@ -462,7 +464,7 @@ def _build_position_group(pos, overview, refresh_all, row_registry):
                     .classes("w-full")
                     .style(
                         f"display: grid; grid-template-columns: {COL_WIDTHS}; min-width: max-content; "
-                        f"background: white; {border}"
+                        f"background: var(--cb-white, white); {border}"
                     )
                 )
                 row_registry[ts.ts_label] = row_el
@@ -607,12 +609,12 @@ def build_dry_run_summary(overview: DatasetOverview) -> None:
         with (
             ui.column()
             .classes("w-full gap-1")
-            .style("border-radius: var(--cb-r-lg, 6px); padding: 10px 12px; background: #f0fdf4;")
+            .style("border-radius: var(--cb-r-lg, 6px); padding: 10px 12px; background: var(--cb-green-50, #f0fdf4);")
         ):
             with ui.row().classes("items-center gap-2"):
-                ui.icon("verified_user", size="16px").style("color: #16a34a;")
+                ui.icon("verified_user", size="16px").style("color: var(--cb-green-600, #16a34a);")
                 ui.label("Your original data will not be modified").style(
-                    f"{FONT} font-size: 11px; font-weight: 600; color: #15803d;"
+                    f"{FONT} font-size: 11px; font-weight: 600; color: var(--cb-green-700, #15803d);"
                 )
             ui.label(
                 "CryoBoost creates symbolic links (symlinks) pointing to your "
@@ -621,4 +623,4 @@ def build_dry_run_summary(overview: DatasetOverview) -> None:
                 "copied, moved, or modified. Mdoc files are copied into the "
                 "project directory with updated paths, but the originals remain "
                 "untouched. All downstream processing operates on the project's copies."
-            ).style(f"{FONT} font-size: 10px; color: #166534; line-height: 1.5;")
+            ).style(f"{FONT} font-size: 10px; color: var(--cb-green-800, #166534); line-height: 1.5;")

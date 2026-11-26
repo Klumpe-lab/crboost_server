@@ -23,7 +23,7 @@ from ui.job_plugins.params_renderer import _is_pathlike, render_params
 __all__ = ["_is_pathlike", "render_config_preamble", "render_default_params", "render_default_params_card"]
 
 # An open decision, under a field row's value column (label column + gap), in the Segment tab's amber.
-_NOTE_WARN_STYLE = f"{HELPER_STYLE} color: #b45309; margin: 0 0 4px {NOTE_INDENT}px;"
+_NOTE_WARN_STYLE = f"{HELPER_STYLE} color: var(--cb-amber-700, #b45309); margin: 0 0 4px {NOTE_INDENT}px;"
 # A warning about the whole job, above its parameters.
 _BANNER_WARN_STYLE = f"{HELPER_STYLE} color: var(--cb-warn-ink, #8a4b06); margin: 0 0 8px;"
 
@@ -211,7 +211,9 @@ def render_config_preamble(job_model):
         # Folded text inside the Parameters panel: no box of its own.
         exp.props('header-class="text-[11px] font-semibold text-slate-600 px-0"')
         with ui.column().classes("w-full").style("padding: 2px 12px 8px;"):
-            ui.markdown(text).classes("cb-preamble").style("font-size: 11px; line-height: 1.5; color: #334155;")
+            ui.markdown(text).classes("cb-preamble").style(
+                "font-size: 11px; line-height: 1.5; color: var(--cb-slate-700, #334155);"
+            )
 
 
 def render_default_params(

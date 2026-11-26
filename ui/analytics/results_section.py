@@ -101,7 +101,9 @@ class ResultsSection:
             house_select(
                 "with", dict(others), value=st["other"], width="w-64", on_change=lambda e: st.update(other=e.value)
             )
-            out = ui.label("").style(f"{MONO} font-size: 10px; color: #1e293b; white-space: pre-line;")
+            out = ui.label("").style(
+                f"{MONO} font-size: 10px; color: var(--cb-slate-800, #1e293b); white-space: pre-line;"
+            )
 
             async def compare() -> None:
                 async with self._flight("compare") as acquired:

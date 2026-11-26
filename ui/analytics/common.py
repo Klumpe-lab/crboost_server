@@ -17,15 +17,17 @@ from ui.job_plugins._field_styles import PANEL_STYLE, PANEL_TITLE_STYLE, section
 LABEL_CLS = "text-[9px] font-bold text-gray-400 uppercase tracking-wide"
 HINT_CLS = "text-[10px] text-gray-400"
 ERROR_CLS = "text-[11px] text-red-600"
-WARN_COLOR = "#b45309"
+WARN_COLOR = "var(--cb-amber-700, #b45309)"
 # Multi-line hover text: keep the line breaks, cap the width.
 TOOLTIP_STYLE = "white-space: pre-line; max-width: 460px;"
 
 
 # A chart on a panel sits on white, as the Journey's chart tiles do.
-CHART_CELL_STYLE = "background: #ffffff; border-radius: var(--cb-r-md, 4px); padding: 6px; box-sizing: border-box;"
+CHART_CELL_STYLE = (
+    "background: var(--cb-white, #ffffff); border-radius: var(--cb-r-md, 4px); padding: 6px; box-sizing: border-box;"
+)
 # A table on a panel: a white body under its white sticky head, no rule above it.
-TABLE_ON_PANEL_STYLE = "background: #ffffff; border-radius: var(--cb-r-md, 4px); border-top: none;"
+TABLE_ON_PANEL_STYLE = "background: var(--cb-white, #ffffff); border-radius: var(--cb-r-md, 4px); border-top: none;"
 
 
 def section(title: str, *, tooltip: str | None = None) -> None:

@@ -11,15 +11,21 @@ from services.jobs.spec import display_name
 from services.protocols.schema import ProtocolSpecies, ProtocolStage
 from ui.styles import MONO, SANS as FONT
 
-TITLE = f"{FONT} font-size: 12px; font-weight: 700; color: #0f172a;"
-LABEL = f"{FONT} font-size: 9px; font-weight: 700; color: #94a3b8; letter-spacing: 0.06em; text-transform: uppercase;"
-TEXT = f"{FONT} font-size: 10px; color: #475569; line-height: 1.4;"
-VAL = f"{MONO} font-size: 10px; color: #0f172a;"
-CHIP = f"{MONO} font-size: 9px; border-radius: var(--cb-r-md, 4px); padding: 1px 6px; border: 1px solid #e2e8f0;"
+TITLE = f"{FONT} font-size: 12px; font-weight: 700; color: var(--cb-slate-900, #0f172a);"
+LABEL = (
+    f"{FONT} font-size: 9px; font-weight: 700; color: var(--cb-slate-400, #94a3b8); letter-spacing: 0.06em; "
+    "text-transform: uppercase;"
+)
+TEXT = f"{FONT} font-size: 10px; color: var(--cb-slate-600, #475569); line-height: 1.4;"
+VAL = f"{MONO} font-size: 10px; color: var(--cb-slate-900, #0f172a);"
+CHIP = (
+    f"{MONO} font-size: 9px; border-radius: var(--cb-r-md, 4px); padding: 1px 6px; "
+    "border: 1px solid var(--cb-slate-200, #e2e8f0);"
+)
 # A dialog footer: its own padding, no band or rule above it.
 FOOTER = "padding: 6px 16px 14px;"
 KV_GRID = "display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 2px 14px; width: 100%;"
-KEY = f"{FONT} font-size: 10px; color: #94a3b8; white-space: nowrap;"
+KEY = f"{FONT} font-size: 10px; color: var(--cb-slate-400, #94a3b8); white-space: nowrap;"
 
 
 def fmt_value(v: Any) -> str:
@@ -45,9 +51,9 @@ def kv_grid(rows: list[tuple[str, Any]]) -> None:
 
 def block_title(text: str, meta: str = "") -> None:
     with ui.row().classes("w-full items-baseline gap-2 no-wrap").style("margin: 12px 0 5px;"):
-        ui.label(text).style(f"{FONT} font-size: 11px; font-weight: 600; color: #1e293b;")
+        ui.label(text).style(f"{FONT} font-size: 11px; font-weight: 600; color: var(--cb-slate-800, #1e293b);")
         if meta:
-            ui.label(meta).style(VAL + " color: #94a3b8;")
+            ui.label(meta).style(VAL + " color: var(--cb-slate-400, #94a3b8);")
 
 
 def species_block(sp: ProtocolSpecies) -> None:

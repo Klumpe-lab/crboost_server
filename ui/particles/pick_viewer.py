@@ -563,7 +563,7 @@ def _render_cutout_filter_controls(
 
     type_sel.on_value_change(_on_type)
     param_sel.on_value_change(_on_param)
-    with ui.icon("help_outline", size="13px").style("color: #94a3b8; cursor: help;"):
+    with ui.icon("help_outline", size="13px").style("color: var(--cb-slate-400, #94a3b8); cursor: help;"):
         ui.tooltip(_cutout_filter_tooltip(apix, apix_source)).style("font-size: 10px; max-width: 320px;")
 
 
@@ -603,7 +603,9 @@ def _render_no_list_cutouts(lst: dict) -> None:
     """In place of a list's cutouts when none could be cut: every pick sits outside the reconstruction."""
     with ui.row().classes("items-center gap-2"):
         ui.label(f"{len(lst.get('picks', []))} picks").classes("cb-detail-meta")
-        ui.label("no cutouts: every pick lies outside the reconstruction").style("font-size: 10px; color: #94a3b8;")
+        ui.label("no cutouts: every pick lies outside the reconstruction").style(
+            "font-size: 10px; color: var(--cb-slate-400, #94a3b8);"
+        )
 
 
 def _render_cutout_shortfall(n_cutouts: int, n_picks: int, why: str) -> None:

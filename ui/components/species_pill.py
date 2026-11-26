@@ -36,7 +36,7 @@ def render_species_mark(species, *, named: bool = False, tooltip: str | None = N
         ui.html(species_glyph_svg(species, size), sanitize=False).style("display: flex;")
         if named:
             ui.label(species.name).style(
-                f"{SANS} font-size: 10px; color: #334155; font-weight: 600; white-space: nowrap; "
+                f"{SANS} font-size: 10px; color: var(--cb-slate-700, #334155); font-weight: 600; white-space: nowrap; "
                 "overflow: hidden; text-overflow: ellipsis;"
             )
         if tooltip != "":
@@ -64,11 +64,11 @@ def render_species_line(species, *, on_open: Callable[[], None] | None = None) -
         if species is None:
             ui.icon("warning", size="13px").classes("text-amber-600")
             ui.label("No species linked to this job — assign one or use a `__<species_id>` instance suffix.").style(
-                f"{SANS} font-size: 10px; color: #b45309;"
+                f"{SANS} font-size: 10px; color: var(--cb-amber-700, #b45309);"
             )
             return
         ui.label("Species").style(
-            f"{SANS} font-size: 9px; font-weight: 700; color: #94a3b8; "
+            f"{SANS} font-size: 9px; font-weight: 700; color: var(--cb-slate-400, #94a3b8); "
             "letter-spacing: 0.06em; text-transform: uppercase;"
         )
         render_species_mark(species, named=True)

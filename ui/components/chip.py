@@ -31,7 +31,7 @@ def render_chip(
 # template workbench and the Species tab.
 
 _BODY = "#1e293b"
-_SOFT = "#5b7089"
+_SOFT = "var(--cb-x-5b7089, #5b7089)"
 
 
 def render_polarity_chip(polarity: str, *, tooltip: str | None = None) -> ui.element:
@@ -41,7 +41,7 @@ def render_polarity_chip(polarity: str, *, tooltip: str | None = None) -> ui.ele
     square = (
         f"background: {_BODY}; border: 1px solid {_BODY};"
         if word == "black"
-        else f"background: #ffffff; border: 1px solid {_SOFT};"
+        else f"background: var(--cb-white, #ffffff); border: 1px solid {_SOFT};"
     )
     with ui.element("span").style(
         f"display: inline-flex; align-items: center; gap: 5px; {MONO} font-size: 9.5px; color: {_BODY}; "

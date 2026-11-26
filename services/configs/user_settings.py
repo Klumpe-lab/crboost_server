@@ -24,6 +24,8 @@ class UserSettings(BaseModel):
     # Agents (the agent API, e.g. Claude Code) may change and delete in the projects this user owns, not only
     # in those the API made. Reading is open either way. Off until the user turns it on.
     agents_may_edit_my_projects: bool = False
+    # The look the pages open in (ui/dashboard/theme.py THEMES): light, dark, or one of the papers.
+    theme: str = "light"
 
 
 _cached: tuple[float, UserSettings] | None = None

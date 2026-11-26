@@ -1521,7 +1521,8 @@ class _CtfFitPanel:
                 )
                 # A narrow column cuts the readout short rather than spilling the header line.
                 self._readout = ui.label("").style(
-                    "font-family: 'IBM Plex Mono', monospace; font-size: 9px; color: #64748b; white-space: nowrap; "
+                    "font-family: 'IBM Plex Mono', monospace; font-size: 9px; color: var(--cb-slate-500, #64748b); "
+                    "white-space: nowrap; "
                     "min-width: 0; overflow: hidden; text-overflow: ellipsis;"
                 )
             self._chart = ui.echart(self._options()).style(f"width: 100%; {_PLOT_HEIGHT}")

@@ -49,14 +49,14 @@ SZ_META = "9px"
 
 # Blue-tinted slate palette -- feels more like scientific instrument UI
 # than pure neutral grays
-CLR_HEADING = "#0f172a"  # slate-950: dark, authoritative
-CLR_LABEL = "#475569"  # slate-600
-CLR_SUBLABEL = "#94a3b8"  # slate-400
-CLR_GHOST = "#cbd5e1"  # slate-300
+CLR_HEADING = "var(--cb-slate-900, #0f172a)"  # slate-950: dark, authoritative
+CLR_LABEL = "var(--cb-slate-600, #475569)"  # slate-600
+CLR_SUBLABEL = "var(--cb-slate-400, #94a3b8)"  # slate-400
+CLR_GHOST = "var(--cb-slate-300, #cbd5e1)"  # slate-300
 CLR_ACCENT = "#2563eb"  # blue-600
-CLR_ACCENT_LIGHT = "#dbeafe"
-CLR_ACCENT_TEXT = "#1e40af"
-CLR_META = "#64748b"  # slate-500 -- readable metadata
+CLR_ACCENT_LIGHT = "var(--cb-blue-100, #dbeafe)"
+CLR_ACCENT_TEXT = "var(--cb-blue-800, #1e40af)"
+CLR_META = "var(--cb-slate-500, #64748b)"  # slate-500 -- readable metadata
 CLR_SUCCESS = "#0d9488"  # teal-600: academic, not shouty green
 CLR_ERROR = "#be4343"  # muted red, not aggressive
 CLR_WARN = "#d97706"  # amber-600: an estimate standing in for a fact
@@ -1336,7 +1336,7 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
 
     # The form is white with its blocks on pale gray-blue panels (the Journey's section look); no
     # card outline around it.
-    card_style = "background: white;"
+    card_style = "background: var(--cb-white, white);"
     section_style = f"gap: 8px; {PANEL_STYLE}"
     field_label_style = (
         f"{FONT} font-size: {SZ_BODY}; font-weight: 500; color: {CLR_LABEL}; "

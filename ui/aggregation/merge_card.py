@@ -57,11 +57,11 @@ log = logging.getLogger(__name__)
 # Steelblue is the single accent — reserved for the curated/uncurated highlight.
 # Everything else stays neutral slate.
 STEEL = "#4682b4"
-SLATE = "#475569"
-SLATE_MUTED = "#94a3b8"
+SLATE = "var(--cb-slate-600, #475569)"
+SLATE_MUTED = "var(--cb-slate-400, #94a3b8)"
 # The header, toolbar and action bars: a light-blue band ruled off from the body by a hairline.
-_BAR_TOP = "background: #f4f8fc; border-bottom: 1px solid #dbe3ec;"
-_BAR_BOTTOM = "background: #f4f8fc; border-top: 1px solid #dbe3ec;"
+_BAR_TOP = "background: var(--cb-x-f4f8fc, #f4f8fc); border-bottom: 1px solid var(--cb-x-dbe3ec, #dbe3ec);"
+_BAR_BOTTOM = "background: var(--cb-x-f4f8fc, #f4f8fc); border-top: 1px solid var(--cb-x-dbe3ec, #dbe3ec);"
 
 
 def _active_merge(state) -> AggregationMerge | None:
@@ -621,7 +621,7 @@ class _MergeSelector:
         header = (
             ui.row()
             .classes("w-full items-center gap-2 px-2 py-1.5 cursor-pointer hover:bg-slate-50")
-            .style("border-bottom: 1px solid #eef2f6;")
+            .style("border-bottom: 1px solid var(--cb-x-eef2f6, #eef2f6);")
         )
         header.on("click", lambda _e, p=project_path: self._toggle_project(p))
         with header:
@@ -765,7 +765,7 @@ class _MergeSelector:
         with ui.row().classes("w-full items-center gap-1.5 px-2 py-0.5 hover:bg-slate-50"):
             house_check(value=is_sel, on_change=on_toggle)
             ui.icon("filter_alt" if show_curated else "circle", size="9px").style(
-                f"color: {STEEL if show_curated else '#e2e8f0'}; flex-shrink: 0;"
+                f"color: {STEEL if show_curated else 'var(--cb-slate-200, #e2e8f0)'}; flex-shrink: 0;"
             ).tooltip("curated picks" if show_curated else "original picks")
             # Fixed-width prettified label → operational name lands in a column.
             ui.label(pretty).style(f"width: 92px; flex-shrink: 0; font-size: 11px; color: {SLATE}; font-weight: 500;")
@@ -786,7 +786,8 @@ class _MergeSelector:
                 active = use_orig == val
                 seg = ui.label(label).style(
                     f"font-size: 9px; line-height: 16px; padding: 0 6px; cursor: pointer; "
-                    f"border: 1px solid {STEEL if active else '#e2e8f0'}; border-radius: {radius}; "
+                    f"border: 1px solid {STEEL if active else 'var(--cb-slate-200, #e2e8f0)'}; "
+                    f"border-radius: {radius}; "
                     f"color: {'white' if active else SLATE_MUTED}; "
                     f"background: {STEEL if active else 'transparent'};"
                 )
@@ -831,7 +832,9 @@ class _MergeSelector:
         orphans = [s for s in self.dlg.state.aggregation_sources if s.optset_path not in discovered]
         if not orphans:
             return
-        with ui.column().classes("w-full gap-0 mt-2 pt-2").style("border-top: 1px dashed #e2e8f0;"):
+        with (
+            ui.column().classes("w-full gap-0 mt-2 pt-2").style("border-top: 1px dashed var(--cb-slate-200, #e2e8f0);")
+        ):
             ui.label("Other sources (outside your project roots)").classes("text-[10px] text-gray-400 px-2")
             for s in orphans:
                 exists = Path(s.optset_path).exists()
@@ -890,7 +893,7 @@ def open_aggregation_merge_dialog(project_path) -> None:
         ui.dialog() as dlg,
         ui.card()
         .classes("w-[1060px] max-w-[96vw] max-h-[92vh] overflow-hidden border border-slate-200 bg-white p-0")
-        .style("color: #1e293b;"),
+        .style("color: var(--cb-slate-800, #1e293b);"),
     ):
         with ui.row().classes("w-full items-center gap-3 px-4 py-2").style(_BAR_TOP):
             ui.icon("merge_type", size="20px").style(f"color: {SLATE};")
@@ -898,7 +901,8 @@ def open_aggregation_merge_dialog(project_path) -> None:
             render_segmented(GRADE_TABS, GRADE_EXTRACTED, _switch_grade)
             if has_merged_outputs(d.state):
                 ui.label("merged").style(
-                    "background: #ecfdf5; border: 1px solid #a7f3d0; color: #047857; "
+                    "background: var(--cb-emerald-50, #ecfdf5); border: 1px solid var(--cb-emerald-200, #a7f3d0); "
+                    "color: var(--cb-emerald-700, #047857); "
                     "border-radius: var(--cb-r-sm, 3px); "
                     "padding: 0 6px; font: 600 9px 'IBM Plex Sans', sans-serif;"
                 )
@@ -1113,7 +1117,7 @@ def _render_registry(d: _MergeDialog, container) -> None:
 
 def _render_merge_record(d: _MergeDialog, m: AggregationMerge, is_active: bool) -> None:
     expanded = m.slug in d.expanded_registry
-    border = STEEL if is_active else "#e2e8f0"
+    border = STEEL if is_active else "var(--cb-slate-200, #e2e8f0)"
     with (
         ui.element("div")
         .classes("w-full")
@@ -1123,7 +1127,7 @@ def _render_merge_record(d: _MergeDialog, m: AggregationMerge, is_active: bool) 
         head = (
             ui.row()
             .classes("w-full items-center gap-2 px-2 py-1.5 cursor-pointer hover:bg-slate-50")
-            .style("background: #fafbfc;")
+            .style("background: var(--cb-x-fafbfc, #fafbfc);")
         )
         head.on("click", lambda _e, s=m.slug: d.toggle_registry(s))
         with head:
@@ -1152,7 +1156,7 @@ def _render_merge_record(d: _MergeDialog, m: AggregationMerge, is_active: bool) 
             _reg_stat(str(m.n_sources), "src")
 
         if expanded:
-            with ui.element("div").classes("w-full").style("padding: 4px 8px 8px; background: white;"):
+            with ui.element("div").classes("w-full").style("padding: 4px 8px 8px; background: var(--cb-white, white);"):
                 if m.description:
                     ui.label(m.description).classes("text-[11px] text-slate-500 italic mb-1")
                 _render_merge_table(m)
@@ -1185,8 +1189,12 @@ def _render_merge_table(m: AggregationMerge) -> None:
             f"white-space: nowrap; {'font-weight: 600; text-transform: uppercase;' if header else ''}"
         )
 
-    with ui.element("div").classes("w-full").style("border-top: 1px solid #eef2f6;"):
-        with ui.row().classes("w-full items-center gap-2 py-1").style("border-bottom: 1px solid #eef2f6;"):
+    with ui.element("div").classes("w-full").style("border-top: 1px solid var(--cb-x-eef2f6, #eef2f6);"):
+        with (
+            ui.row()
+            .classes("w-full items-center gap-2 py-1")
+            .style("border-bottom: 1px solid var(--cb-x-eef2f6, #eef2f6);")
+        ):
             grow("Project", header=True)
             cell("Species", "96px", header=True)
             cell("Picks", "56px", header=True)

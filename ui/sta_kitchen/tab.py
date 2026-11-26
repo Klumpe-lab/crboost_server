@@ -176,7 +176,7 @@ class KitchenTab:
                         self._build_dots()
                     self._refs["group_box"], self._refs["rows_box"] = group_box, rows_box
                     self._refs["dots_box"] = dots_box
-                    self._refs["state"] = ui.label("").style("font-size: 9px; color: #64748b;")
+                    self._refs["state"] = ui.label("").style("font-size: 9px; color: var(--cb-slate-500, #64748b);")
                     ui.element("div").style("flex: 1;")
                     self._build_means()
                     house_button("Sources", self._open_sources, tooltip="What feeds this pool, and adding more")
@@ -420,7 +420,7 @@ class KitchenTab:
                 "display: grid; grid-template-columns: auto auto; gap: 6px 10px; align-items: center; padding: 10px;"
             ):
                 for key, (label, choices) in DOT_CHOICES.items():
-                    ui.label(label).style("font-size: 9px; color: #475569; white-space: nowrap;")
+                    ui.label(label).style("font-size: 9px; color: var(--cb-slate-600, #475569); white-space: nowrap;")
                     self._segs[f"dots_{key}"] = render_segmented(
                         choices, self.prefs["dots"][key], lambda v, k=key: self._set_dot(k, v)
                     )
@@ -458,7 +458,7 @@ class KitchenTab:
             with ui.element("div").style(
                 "display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; width: 290px;"
             ):
-                ui.label(MEANS_TIP).style("font-size: 9px; line-height: 1.45; color: #475569;")
+                ui.label(MEANS_TIP).style("font-size: 9px; line-height: 1.45; color: var(--cb-slate-600, #475569);")
                 with ui.row().classes("no-wrap gap-4 justify-center w-full"):
                     for which in ("kept", "removed"):
                         with ui.column().classes("items-center gap-1"):
@@ -467,11 +467,15 @@ class KitchenTab:
                                 "display: block; object-fit: cover;"
                             )
                             img.set_visibility(False)
-                            cap = ui.label(f"{which}: not made yet").style("font-size: 9px; color: #64748b;")
+                            cap = ui.label(f"{which}: not made yet").style(
+                                "font-size: 9px; color: var(--cb-slate-500, #64748b);"
+                            )
                             self._refs[f"means_{which}"], self._refs[f"means_{which}_cap"] = img, cap
                 with ui.row().classes("items-center gap-2 no-wrap"):
                     house_button("Compute for this cut", self._compute_means, kind="accent")
-                    self._refs["means_state"] = ui.label("").style("font-size: 9px; color: #64748b;")
+                    self._refs["means_state"] = ui.label("").style(
+                        "font-size: 9px; color: var(--cb-slate-500, #64748b);"
+                    )
 
     async def _compute_means(self) -> None:
         async with self._flight("means") as acquired:

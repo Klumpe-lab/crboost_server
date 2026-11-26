@@ -32,10 +32,11 @@ _RED = "#dc2626"
 _AMBER = "#d97706"
 _LINE_STYLE = f"{SANS} font-size: 10px; color: {CLR_HEADER};"
 _TH = (
-    f"{SANS} font-size: 9px; font-weight: 600; color: #94a3b8; text-align: left; padding: 2px 10px 3px 0; "
-    "position: sticky; top: 0; background: #fff; white-space: nowrap;"
+    f"{SANS} font-size: 9px; font-weight: 600; color: var(--cb-slate-400, #94a3b8); text-align: left; "
+    "padding: 2px 10px 3px 0; "
+    "position: sticky; top: 0; background: var(--cb-white, #fff); white-space: nowrap;"
 )
-_TD = f"{MONO} font-size: 10px; color: #334155; padding: 1px 10px 1px 0; white-space: nowrap;"
+_TD = f"{MONO} font-size: 10px; color: var(--cb-slate-700, #334155); padding: 1px 10px 1px 0; white-space: nowrap;"
 # A click anywhere on a row sends its tilt series.
 _ROW_CLICK_JS = "(event) => { const tr = event.target.closest('tr[data-ts]'); if (tr) emit({ts: tr.dataset.ts}); }"
 
@@ -250,7 +251,7 @@ def _render_body(
             ui.label("click a row to keep or leave out its tilt series").style(HELPER_STYLE)
 
     with ui.element("div").style(
-        "max-height: 420px; overflow-y: auto; width: 100%; background: #fff; "
+        "max-height: 420px; overflow-y: auto; width: 100%; background: var(--cb-white, #fff); "
         "border-radius: var(--cb-r-md, 4px); padding: 2px 8px;"
     ):
         table = ui.html("", sanitize=False)

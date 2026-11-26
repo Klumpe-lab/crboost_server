@@ -20,7 +20,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_TITLE = "font-size: 13px; font-weight: 600; color: #0f172a;"
+_TITLE = "font-size: 13px; font-weight: 600; color: var(--cb-slate-900, #0f172a);"
 NO_GROUP = ""
 
 

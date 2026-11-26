@@ -149,7 +149,7 @@ async def prompt_species_draft() -> SpeciesDraft | None:
             "Notes", lambda: ui.textarea(placeholder="free-form, optional").props("autogrow rows=2"), width="w-full"
         )
 
-        ui.element("div").style("height: 1px; background: #eef2f6; margin: 2px 0;")
+        ui.element("div").style("height: 1px; background: var(--cb-x-eef2f6, #eef2f6); margin: 2px 0;")
 
         # ── Templates & masks (optional) ──────────────────────────────────────
         ui.label("Templates & masks — optional").classes(_BLOCK_CLS)

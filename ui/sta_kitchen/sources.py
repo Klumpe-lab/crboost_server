@@ -28,12 +28,12 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 NOT_HERE = ""
-_TITLE = "font-size: 13px; font-weight: 600; color: #0f172a;"
-_CELL = "font-size: 10px; color: #334155;"
-_MONO = "font-family: 'IBM Plex Mono', monospace; font-size: 10px; color: #334155;"
-_HEAD = "font-size: 11px; font-weight: 600; color: #1e293b; margin-top: 4px;"
+_TITLE = "font-size: 13px; font-weight: 600; color: var(--cb-slate-900, #0f172a);"
+_CELL = "font-size: 10px; color: var(--cb-slate-700, #334155);"
+_MONO = "font-family: 'IBM Plex Mono', monospace; font-size: 10px; color: var(--cb-slate-700, #334155);"
+_HEAD = "font-size: 11px; font-weight: 600; color: var(--cb-slate-800, #1e293b); margin-top: 4px;"
 _ROW = "min-height: 22px;"
-_CARET = "font-size: 10px; color: #64748b; cursor: pointer;"
+_CARET = "font-size: 10px; color: var(--cb-slate-500, #64748b); cursor: pointer;"
 UNTICK_HINT = "A project or tomogram unticked leaves the draft through its filter (project, σ by tomogram)."
 
 
@@ -111,7 +111,9 @@ async def open_sources(tab: KitchenTab) -> None:
                         house_check(value=not p["out"], on_change=lambda e, lab=p["label"]: project_in(lab, e.value))
                         caret = ui.label("▾" if opened else "▸").style(_CARET)
                         caret.on("click", lambda _e, lab=p["label"]: toggle(lab))
-                        name = ui.label(p["label"]).style("font-size: 11px; font-weight: 600; color: #1e293b;")
+                        name = ui.label(p["label"]).style(
+                            "font-size: 11px; font-weight: 600; color: var(--cb-slate-800, #1e293b);"
+                        )
                         name.style("cursor: pointer;").on("click", lambda _e, lab=p["label"]: toggle(lab))
                         ui.label(f"{p['kept']:,} kept of {p['rows']:,} · {len(p['frames'])} tomograms").style(_MONO)
                         if undecided:
@@ -277,7 +279,9 @@ async def open_add_sources(tab: KitchenTab, *, on_added) -> None:
                     with ui.column().classes("w-full gap-0"):
                         with ui.row().classes("w-full items-center no-wrap gap-2"):
                             label = r["path"].name + (" (this project)" if r["path"] == home_view.path else "")
-                            ui.label(label).style("font-size: 11px; font-weight: 600; color: #1e293b;")
+                            ui.label(label).style(
+                                "font-size: 11px; font-weight: 600; color: var(--cb-slate-800, #1e293b);"
+                            )
                             if r["error"]:
                                 ui.label(r["error"]).classes(ERROR_CLS).classes("truncate")
                                 continue

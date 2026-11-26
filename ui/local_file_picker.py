@@ -28,7 +28,7 @@ _ROW_STYLE = (
     f"display: flex; align-items: center; gap: 8px; height: 23px; padding: 0 16px; {_SANS} "
     "font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;"
 )
-_NOTE_STYLE = f"{_SANS} font-size: 10px; color: #94a3b8; padding: 8px 16px;"
+_NOTE_STYLE = f"{_SANS} font-size: 10px; color: var(--cb-slate-400, #94a3b8); padding: 8px 16px;"
 
 # One listener per list, not per row: the rows are an HTML string, so a 500-entry folder is one
 # element on the socket. The click highlights at once in the browser and tells the server which.
@@ -138,7 +138,10 @@ class local_file_picker(ui.dialog):
             with (
                 ui.row()
                 .classes("w-full items-center no-wrap")
-                .style("gap: 2px; padding: 5px 8px; background: #f8fafc; border-bottom: 1px solid #e2e8f0;")
+                .style(
+                    "gap: 2px; padding: 5px 8px; background: var(--cb-slate-50, #f8fafc); "
+                    "border-bottom: 1px solid var(--cb-slate-200, #e2e8f0);"
+                )
             ):
                 self._up = icon_button("arrow_upward", self._go_up, tooltip="Parent folder")
                 icon_button("home", self._go_home, tooltip="Home folder")
@@ -174,10 +177,13 @@ class local_file_picker(ui.dialog):
             with (
                 ui.row()
                 .classes("w-full items-center no-wrap")
-                .style("gap: 6px; padding: 5px 8px; background: #f8fafc; border-top: 1px solid #e2e8f0;")
+                .style(
+                    "gap: 6px; padding: 5px 8px; background: var(--cb-slate-50, #f8fafc); "
+                    "border-top: 1px solid var(--cb-slate-200, #e2e8f0);"
+                )
             ):
                 self._status = ui.label("").style(
-                    f"{_MONO} font-size: 10px; color: #94a3b8; flex: 1; min-width: 0; "
+                    f"{_MONO} font-size: 10px; color: var(--cb-slate-400, #94a3b8); flex: 1; min-width: 0; "
                     "overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"
                 )
                 house_button("Cancel", self.close)
@@ -324,7 +330,7 @@ class local_file_picker(ui.dialog):
 
     def _note(self, text: str, *, bad: bool = False) -> None:
         self._status.text = text
-        self._status.style(f"color: {'#b91c1c' if bad else '#94a3b8'};")
+        self._status.style(f"color: {'var(--cb-red-700, #b91c1c)' if bad else 'var(--cb-slate-400, #94a3b8)'};")
 
     def _on_glob(self) -> None:
         self._sel = None
@@ -362,7 +368,8 @@ class local_file_picker(ui.dialog):
                 self._rows.append((os.path.join(self._dir, name), is_dir))
                 sel = " cb-fp-sel" if i == self._sel else ""
                 parts.append(
-                    f'<div class="cb-fp-row{sel}" data-i="{i}" style="{_ROW_STYLE} color: #334155; cursor: pointer;">'
+                    f'<div class="cb-fp-row{sel}" data-i="{i}" style="{_ROW_STYLE} color: '
+                    'var(--cb-slate-700, #334155); cursor: pointer;">'
                     f"{_FOLDER_ICON if is_dir else _FILE_ICON}<span>{label}</span></div>"
                 )
             else:

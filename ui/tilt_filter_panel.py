@@ -62,7 +62,11 @@ from ui.tilt_previews import (
 
 logger = logging.getLogger(__name__)
 
-_INK, _LABEL, _MUTED, _RED, _AMBER = "#0f172a", "#475569", "#94a3b8", "#be4343", "#b45309"
+_INK = "var(--cb-slate-900, #0f172a)"
+_LABEL = "var(--cb-slate-600, #475569)"
+_MUTED = "var(--cb-slate-400, #94a3b8)"
+_RED = "var(--cb-x-be4343, #be4343)"
+_AMBER = "var(--cb-amber-700, #b45309)"
 # The distributions' stage-tilt bins and confidence-score bins.
 _BIN_DEG = 10
 _SCORE_BINS = 20
@@ -251,7 +255,7 @@ class TiltFilterPage:
         )
         with head:
             self._charts_chev = ui.label("▸").classes("cb-tp-chev")
-            ui.label("charts").style(f"{SANS} font-size: 10px; font-weight: 600; color: #334155;")
+            ui.label("charts").style(f"{SANS} font-size: 10px; font-weight: 600; color: var(--cb-slate-700, #334155);")
         head.on("click", self._toggle_charts)
         self._charts_box = ui.element("div").style("display: none; min-width: 0;")
 
@@ -287,7 +291,7 @@ class TiltFilterPage:
         )
         ui.html(
             '<div style="display:flex;flex-wrap:wrap;gap:4px 14px;font-family:IBM Plex Sans,sans-serif;font-size:9px;'
-            f'color:#475569;padding:4px 0 2px;">{items}</div>',
+            f'color:var(--cb-slate-600, #475569);padding:4px 0 2px;">{items}</div>',
             sanitize=False,
         )
         with ui.element("div").style("display: flex; gap: 14px; flex-wrap: wrap; min-width: 0;"):
@@ -314,7 +318,9 @@ class TiltFilterPage:
     @staticmethod
     def _small_chart(title: str, tip: str):
         with ui.element("div").style("flex: 1 1 240px; min-width: 0;"):
-            ui.label(title).style(f"{SANS} font-size: 9px; font-weight: 600; color: #334155;").tooltip(tip)
+            ui.label(title).style(
+                f"{SANS} font-size: 9px; font-weight: 600; color: var(--cb-slate-700, #334155);"
+            ).tooltip(tip)
             return ui.echart(_empty_options()).style(f"height: {SMALL_CHART_PX}px; width: 100%;")
 
     # ── Collection ──
@@ -602,14 +608,16 @@ def _render_agreement(states, jm) -> None:
         column = 0 if label == "bad" else 1 if label == "good" else 2
         rows["exclude" if s.p_bad >= jm.threshold else "keep"][column] += 1
     th = f"padding:0 0 2px 10px;font-weight:400;color:{_MUTED};text-align:right;white-space:nowrap;"
-    td = f"padding:1px 0 1px 10px;{MONO} text-align:right;color:#334155;"
+    td = f"padding:1px 0 1px 10px;{MONO} text-align:right;color:var(--cb-slate-700, #334155);"
     body = "".join(
         f'<tr><td style="color:{_LABEL};white-space:nowrap;">DL {call}</td>'
         + "".join(f'<td style="{td}">{n}</td>' for n in rows[call])
         + "</tr>"
         for call in ("exclude", "keep")
     )
-    ui.label("manual labels vs DL calls").style(f"{SANS} font-size: 9px; font-weight: 600; color: #334155;").tooltip(
+    ui.label("manual labels vs DL calls").style(
+        f"{SANS} font-size: 9px; font-weight: 600; color: var(--cb-slate-700, #334155);"
+    ).tooltip(
         f"Scored tilts by the DL call at the threshold {jm.threshold:.2f} (rows) and the manual label (columns). "
         "At Approve a manual label wins."
     )

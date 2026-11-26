@@ -31,7 +31,7 @@ _BOX_STYLE = f"{MONO} font-size: 10.5px; flex: 1 1 0; min-width: 0; max-width: 1
 _INPUT_PROPS = (
     "dense borderless hide-bottom-space "
     "input-style=\"font-family: 'IBM Plex Mono', monospace; font-size: 10.5px; "
-    'color: #1e293b; padding: 1px 2px; min-height: 0;"'
+    'color: var(--cb-slate-800, #1e293b); padding: 1px 2px; min-height: 0;"'
 )
 # Settings that hold 1 nearly always: shown when not 1, or when asked for.
 _QUIET = ("nodes", "ntasks_per_node")
@@ -261,7 +261,8 @@ def _render_supervisor() -> None:
         with head:
             ui.label("Supervisor").style(_LABEL_STYLE)
             ui.label(summary or "conf.yaml defaults").style(
-                f"{MONO} font-size: 9.5px; color: #5b7089; min-width: 0; overflow: hidden; text-overflow: ellipsis; "
+                f"{MONO} font-size: 9.5px; color: var(--cb-x-5b7089, #5b7089); min-width: 0; overflow: hidden; "
+                "text-overflow: ellipsis; "
                 "white-space: nowrap;"
             )
             caret = ui.label("▸").style(f"font-size: 9px; color: {CLR_SUBLABEL}; flex-shrink: 0;")
@@ -275,7 +276,9 @@ def _render_supervisor() -> None:
                 for label, v in fields:
                     with ui.element("div").style(_CELL_STYLE):
                         ui.label(label).style(_LABEL_STYLE)
-                        ui.label(str(v) if v else "—").style(f"{MONO} font-size: 10px; color: #5b7089;")
+                        ui.label(str(v) if v else "—").style(
+                            f"{MONO} font-size: 10px; color: var(--cb-x-5b7089, #5b7089);"
+                        )
         body.set_visibility(False)
 
         def flip(_e=None) -> None:

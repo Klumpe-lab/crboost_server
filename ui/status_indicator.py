@@ -122,7 +122,9 @@ def _dot_html(status: JobStatus, is_orphaned: bool = False, parked_since: str | 
 def _badge_html(
     status: JobStatus, is_orphaned: bool = False, missing_inputs: list | None = None, slurm_job_id: str | None = None
 ) -> str:
-    bg, txt = _BADGE_STYLES.get(status, ("background:#f3f4f6;", "color:#1f2937;"))
+    bg, txt = _BADGE_STYLES.get(
+        status, ("background:var(--cb-gray-100, #f3f4f6);", "color:var(--cb-gray-800, #1f2937);")
+    )
     label = status.value
     if status == JobStatus.QUEUED and slurm_job_id:
         label = f"Queued · {slurm_job_id}"
@@ -142,7 +144,10 @@ def _badge_html(
                 tip += f" +{len(missing) - 3} more"
         else:
             tip = "Orphaned: missing input dependencies"
-        html += f' <span style="color:#f97316;cursor:help;font-size:14px;" title="{escape(tip)}">&#9888;</span>'
+        html += (
+            ' <span style="color:var(--cb-orange-500, #f97316);cursor:help;font-size:14px;" '
+            f'title="{escape(tip)}">&#9888;</span>'
+        )
     return html
 
 

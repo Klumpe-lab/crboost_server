@@ -76,10 +76,13 @@ def _protocol_row(backend, dialog, info: ProtocolInfo) -> None:
         with ui.column().classes("gap-0").style("min-width: 0;"):
             name = ui.label(info.name).style(VAL + " font-weight: 600;")
             if info.protocol is None:
-                ui.label(f"broken: {info.error}").style(TEXT + " color: #b91c1c;")
+                ui.label(f"broken: {info.error}").style(TEXT + " color: var(--cb-red-700, #b91c1c);")
             else:
                 p = info.protocol
-                name.style("cursor: pointer; text-decoration: underline dotted #cbd5e1; text-underline-offset: 3px;")
+                name.style(
+                    "cursor: pointer; text-decoration: underline dotted var(--cb-slate-300, #cbd5e1); "
+                    "text-underline-offset: 3px;"
+                )
                 name.tooltip("Open — every stage and its parameters")
                 name.on("click", lambda i=info: _open_protocol_detail(i))
                 ui.label(
@@ -108,7 +111,7 @@ def _open_protocol_detail(info: ProtocolInfo) -> None:
         with ui.column().classes("w-full gap-0").style("padding: 14px 16px 8px;"):
             with ui.row().classes("w-full items-baseline gap-2 no-wrap"):
                 ui.label(p.name).style(TITLE)
-                ui.label(f"version {p.version}").style(VAL + " color: #94a3b8;")
+                ui.label(f"version {p.version}").style(VAL + " color: var(--cb-slate-400, #94a3b8);")
             if p.description:
                 ui.label(p.description).style(TEXT)
             path_text(info.bundle_dir)

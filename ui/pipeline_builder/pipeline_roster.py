@@ -74,13 +74,14 @@ _PHASE_H = 22
 _RAIL_W = 28
 _RAIL_BG = "var(--cb-head, #f2f6fb)"
 _BAND_LINE = "var(--cb-line, #e4eaf1)"
-_GLYPH_INK = "#5b7089"
-_GLYPH_OFF = "#b3c0cf"
+_GLYPH_INK = "var(--cb-x-5b7089, #5b7089)"
+_GLYPH_OFF = "var(--cb-x-b3c0cf, #b3c0cf)"
 # The species a job is for, as a small grey tag: its glyph, its name (in full on hover). A job whose snapshot differs
 # from its species carries a notch in the tag's top-right corner (`.cb-species-tag.notch`, ui/dashboard/css.py).
 _SPECIES_TAG = (
-    f"{MONO} font-size: 7.5px; text-transform: uppercase; letter-spacing: .05em; color: #4f6782; "
-    "border: 1px solid #dbe3ec; border-radius: 2px; padding: 0 3px; line-height: 11px; flex-shrink: 0; "
+    f"{MONO} font-size: 7.5px; text-transform: uppercase; letter-spacing: .05em; color: var(--cb-x-4f6782, #4f6782); "
+    "border: 1px solid var(--cb-x-dbe3ec, #dbe3ec); border-radius: 2px; padding: 0 3px; line-height: 11px; "
+    "flex-shrink: 0; "
     "max-width: 17ch; position: relative; display: inline-flex; align-items: center; gap: 3px; min-width: 0;"
 )
 _SPECIES_TAG_NAME = "overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0;"
@@ -88,7 +89,7 @@ _SPECIES_TAG_NAME = "overflow: hidden; text-overflow: ellipsis; white-space: now
 
 # The Journey glyph (a route from one point to another) is static/icons/journey.svg, the asset the
 # Tomograms wall's tiles draw too.
-_SB_INFO = "#c0cad4"
+_SB_INFO = "var(--cb-x-c0cad4, #c0cad4)"
 _AVATAR_PALETTE = ["#3b82f6", "#8b5cf6", "#06b6d4", "#10b981", "#f59e0b", "#ec4899"]
 
 # Rail count badges: how much data is behind an icon, without opening it. Recomputed off
@@ -109,7 +110,8 @@ _SB_BADGE_STYLE = (
 # The Jobs button's amber dot while a run waits for the tilt-filter review.
 _SB_DOT_STYLE = (
     "position: absolute; right: 0; top: 0; width: 7px; height: 7px; border-radius: var(--cb-pip-radius, 50%); "
-    "background: #f59e0b; box-shadow: 0 0 0 1.5px #f8fafc; pointer-events: none; display: none;"
+    "background: var(--cb-amber-500, #f59e0b); box-shadow: 0 0 0 1.5px var(--cb-slate-50, #f8fafc); "
+    "pointer-events: none; display: none;"
 )
 
 _JOBS_TIP = (
@@ -172,14 +174,21 @@ def _row_paint(active: bool) -> tuple[str, str]:
             "background: var(--cb-head, #edf4fb); border-left: 2px solid var(--cb-accent, #4a8fd4);",
             "font-weight: 600; color: var(--cb-head-ink, #12324f);",
         )
-    return "background: white; border-left: 2px solid transparent;", "font-weight: 400; color: #1e293b;"
+    return (
+        "background: var(--cb-white, white); border-left: 2px solid transparent;",
+        "font-weight: 400; color: var(--cb-slate-800, #1e293b);",
+    )
 
 
 def _tally(progress: TaskProgress | None, status) -> tuple[str, str, str]:
     """A job's count on its row: (text, ink, hover). Done of all; red with failures, blue while it runs, green
     once every task has settled without one, grey before it has a task list."""
     if progress is None:
-        return "–", "#a9b8c9", "No task list yet: written when the job starts. Click for its magazine."
+        return (
+            "–",
+            "var(--cb-x-a9b8c9, #a9b8c9)",
+            "No task list yet: written when the job starts. Click for its magazine.",
+        )
     ok, total = progress.n_ok, progress.total
     parts = [f"{ok} done"]
     if progress.n_running:
@@ -196,7 +205,7 @@ def _tally(progress: TaskProgress | None, status) -> tuple[str, str, str]:
     elif progress.n_settled == total:
         ink = "var(--cb-ok-ink, #0f6b4c)"
     else:
-        ink = "#94a3b8"
+        ink = "var(--cb-slate-400, #94a3b8)"
     return f"{ok}/{total}", ink, tip
 
 
@@ -481,7 +490,7 @@ class RosterWidget(FingerprintedView):
 
     def _render_template_row(self, job_type, is_flashing: bool) -> None:
         """A type with no job: its name in grey, "+ add" on hover; a click adds one."""
-        bg = "#fefce8" if is_flashing else "transparent"
+        bg = "var(--cb-yellow-50, #fefce8)" if is_flashing else "transparent"
         with (
             ui.element("div")
             .classes("cb-rail-ghost")
@@ -493,11 +502,11 @@ class RosterWidget(FingerprintedView):
         ):
             ui.html(
                 '<span style="display:inline-block;width:7px;height:7px;box-sizing:border-box;'
-                'border:1px dashed #c5d3e2;border-radius:1px;"></span>',
+                'border:1px dashed var(--cb-x-c5d3e2, #c5d3e2);border-radius:1px;"></span>',
                 sanitize=False,
             ).style("display: flex; flex-shrink: 0;")
             ui.label(get_job_display_name(job_type)).style(
-                f"{MONO} font-size: 10px; color: #a9b8c9; flex: 1; min-width: 0; "
+                f"{MONO} font-size: 10px; color: var(--cb-x-a9b8c9, #a9b8c9); flex: 1; min-width: 0; "
                 "overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"
             )
             ui.label("+ add").classes("cb-rail-ghost-add").style(
@@ -514,7 +523,8 @@ class RosterWidget(FingerprintedView):
         pset = next((x for x in list_sets(Path(project_path)) if x.id == set_id), None)
         tag = ui.label(set_id.split("_", 1)[0]).style(
             # Gives way before the name does (a narrow roster cuts the set tag first).
-            f"{MONO} font-size: 8px; color: #2c4a6b; flex: 0 1000 auto; min-width: 0; white-space: nowrap; "
+            f"{MONO} font-size: 8px; color: var(--cb-x-2c4a6b, #2c4a6b); flex: 0 1000 auto; min-width: 0; "
+            "white-space: nowrap; "
             "overflow: hidden; text-overflow: ellipsis;"
         )
         with tag:
@@ -579,7 +589,7 @@ class RosterWidget(FingerprintedView):
                 )
                 self._rows[instance_id] = (row, name_el)
                 tag = ui.label(job_tag or "").style(
-                    f"{MONO} font-size: 8px; color: #94a3b8; flex: 0 0 {_TAG_COL_CH}ch; "
+                    f"{MONO} font-size: 8px; color: var(--cb-slate-400, #94a3b8); flex: 0 0 {_TAG_COL_CH}ch; "
                     "white-space: nowrap; overflow: hidden; text-overflow: ellipsis;"
                 )
                 if full_path:
@@ -1130,7 +1140,8 @@ class RosterWidget(FingerprintedView):
                 ui.element("div")
                 .style(
                     "width: 30px; height: 30px; border-radius: var(--cb-rail-btn-radius, 50%); cursor: pointer; "
-                    "background: #f0fdf4; border: 1px solid #bbf7d0; color: #15803d; "
+                    "background: var(--cb-green-50, #f0fdf4); border: 1px solid var(--cb-green-200, #bbf7d0); "
+                    "color: var(--cb-green-700, #15803d); "
                     "display: flex; align-items: center; justify-content: center; flex-shrink: 0;"
                 )
                 .on("click", panel.handle_run_pipeline)
@@ -1150,7 +1161,8 @@ class RosterWidget(FingerprintedView):
                     ui.element("div")
                     .style(
                         "width: 30px; height: 30px; border-radius: var(--cb-rail-btn-radius, 50%); cursor: pointer; "
-                        "background: #fef2f2; border: 1px solid #fecaca; color: #b91c1c; "
+                        "background: var(--cb-red-50, #fef2f2); border: 1px solid var(--cb-red-200, #fecaca); "
+                        "color: var(--cb-red-700, #b91c1c); "
                         "display: flex; align-items: center; justify-content: center; flex-shrink: 0;"
                     )
                     .on("click", panel.handle_stop_pipeline)
@@ -1447,14 +1459,14 @@ class RosterWidget(FingerprintedView):
                 ui.menu()
                 .props('anchor="center right" self="center left" :offset="[8,0]"')
                 .style(
-                    "background: #ffffff; border: 1px solid #e2e8f0; "
+                    "background: var(--cb-white, #ffffff); border: 1px solid var(--cb-slate-200, #e2e8f0); "
                     "border-radius: var(--cb-r-md, 5px); overflow: hidden; min-width: 210px; "
                     "padding: 0; box-shadow: 0 4px 12px rgba(0,0,0,0.08);"
                 )
             ):
                 with ui.element("div").style(
                     "padding: 7px 11px 5px; font-size: 9px; font-weight: 700; "
-                    "color: #94a3b8; letter-spacing: 0.09em; text-transform: uppercase;"
+                    "color: var(--cb-slate-400, #94a3b8); letter-spacing: 0.09em; text-transform: uppercase;"
                 ):
                     ui.label(title)
                 for row_lbl, row_val in rows:
@@ -1462,10 +1474,10 @@ class RosterWidget(FingerprintedView):
                         "display: flex; justify-content: space-between; align-items: baseline; "
                         "padding: 4px 11px; gap: 10px;"
                     ):
-                        ui.label(row_lbl).style("font-size: 10px; color: #94a3b8; flex-shrink: 0;")
+                        ui.label(row_lbl).style("font-size: 10px; color: var(--cb-slate-400, #94a3b8); flex-shrink: 0;")
                         ui.label(str(row_val)).style(
                             "font-size: 10px; font-family: 'IBM Plex Mono', monospace; "
-                            "color: #1e40af; text-align: right; word-break: break-all;"
+                            "color: var(--cb-blue-800, #1e40af); text-align: right; word-break: break-all;"
                         )
                 ui.element("div").style("height: 4px;")
         return btn

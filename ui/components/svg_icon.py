@@ -38,7 +38,10 @@ def load_icon_svg(name: str, color: str | None = None, *, size: int | None = Non
     svg = _icon_text(name)
     if svg is None:
         return _MISSING
-    if color:
+    if color and color.startswith("var("):
+        # A presentation attribute takes no var(): the icon stays in currentColor and its root carries the colour.
+        svg = re.sub(r"<svg\b", f'<svg style="color: {color};"', svg, count=1)
+    elif color:
         svg = svg.replace("currentColor", color)
     if size is not None:
         head, sep, tail = svg.partition(">")

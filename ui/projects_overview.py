@@ -53,12 +53,12 @@ logger = logging.getLogger(__name__)
 # avatars carry the same per-project identity across all surfaces.
 _AVATAR_PALETTE = ["#3b82f6", "#8b5cf6", "#06b6d4", "#10b981", "#f59e0b", "#ec4899"]
 
-CLR_HEADING = "#0f172a"
-CLR_LABEL = "#475569"
-CLR_SUBLABEL = "#94a3b8"
-CLR_GHOST = "#cbd5e1"
-CLR_BORDER = "#e2e8f0"
-CLR_META = "#64748b"
+CLR_HEADING = "var(--cb-slate-900, #0f172a)"
+CLR_LABEL = "var(--cb-slate-600, #475569)"
+CLR_SUBLABEL = "var(--cb-slate-400, #94a3b8)"
+CLR_GHOST = "var(--cb-slate-300, #cbd5e1)"
+CLR_BORDER = "var(--cb-slate-200, #e2e8f0)"
+CLR_META = "var(--cb-slate-500, #64748b)"
 CLR_RUNNING = "#3b82f6"
 CLR_QUEUED = "#93c5fd"
 CLR_FAILED = "#dc2626"
@@ -93,7 +93,8 @@ _CLR_TAG_MODE = "#4a8fd4"
 _ROW_TAG_STYLE = (
     f"{FONT} font-size: 9px; font-weight: 500; line-height: 13px; padding: 0 6px; "
     "border-radius: var(--cb-r-pill, 999px); "
-    "border: 1px solid #dbe3ec; background: #f4f8fc; color: #4f6782; white-space: nowrap; flex-shrink: 0;"
+    "border: 1px solid var(--cb-x-dbe3ec, #dbe3ec); background: var(--cb-x-f4f8fc, #f4f8fc); "
+    "color: var(--cb-x-4f6782, #4f6782); white-space: nowrap; flex-shrink: 0;"
 )
 # A tag chip in the header: the same capsule at the toolbar's 22 px.
 _TAG_CHIP_STYLE = (
@@ -204,7 +205,7 @@ def _preview_img_html(png: str, stamp: int) -> str:
     url = f"/api/project-preview?path={urllib.parse.quote(png, safe='')}&v={stamp}"
     return (
         f"<img src='{url}' alt='' style='width: 260px; height: 260px; object-fit: contain; "
-        "display: block; border-radius: var(--cb-r-sm, 3px); background: #f1f5f9;' />"
+        "display: block; border-radius: var(--cb-r-sm, 3px); background: var(--cb-slate-100, #f1f5f9);' />"
     )
 
 
@@ -456,7 +457,10 @@ class ProjectsOverview:
             with (
                 ui.scroll_area()
                 .classes("w-full cb-scroll-noh")
-                .style(f"{scroll_style} padding: 0; background: #ffffff; border-radius: var(--cb-r-md, 4px);")
+                .style(
+                    f"{scroll_style} padding: 0; background: var(--cb-white, #ffffff); "
+                    "border-radius: var(--cb-r-md, 4px);"
+                )
             ):
                 self._list_container = ui.column().classes("w-full").style("gap: 0; padding: 0;")
                 # Outside the list, whose children are exactly the rendered entries.
@@ -1451,8 +1455,8 @@ class ProjectsOverview:
             )
             if is_me:
                 ui.label("you").style(
-                    f"{FONT} font-size: 8px; color: #1e40af; font-weight: 700; "
-                    "background: #dbeafe; border-radius: var(--cb-r-sm, 3px); padding: 0 5px;"
+                    f"{FONT} font-size: 8px; color: var(--cb-blue-800, #1e40af); font-weight: 700; "
+                    "background: var(--cb-blue-100, #dbeafe); border-radius: var(--cb-r-sm, 3px); padding: 0 5px;"
                 )
             ui.label(f"{len(projects)} project{'s' if len(projects) != 1 else ''}").style(
                 f"{MONO} font-size: 8px; color: {CLR_SUBLABEL};"
@@ -1537,15 +1541,20 @@ class ProjectsOverview:
         # Clipping means the roster degrades by ellipsising paths instead.
         base_style = (
             "display: flex; flex-direction: row; align-items: stretch; gap: 0; "
-            "overflow: hidden; border-bottom: 1px solid #f1f5f9;"
+            "overflow: hidden; border-bottom: 1px solid var(--cb-slate-100, #f1f5f9);"
         )
-        outline = " box-shadow: inset 0 0 0 1.5px #93c5fd;" if is_selected else ""
+        outline = " box-shadow: inset 0 0 0 1.5px var(--cb-blue-300, #93c5fd);" if is_selected else ""
         deleting = self._delete_mode
         tagging = self._tag_mode is not None and not deleting
         cursor = " cursor: pointer;" if preview_mode or deleting or tagging else " cursor: default;"
         if is_current:
             row_classes = "w-full group" + (" cb-proj-tagrow" if tagging else "")
-            row_style = base_style + " background: #eff6ff; border-left: 3px solid #3b82f6;" + cursor + outline
+            row_style = (
+                base_style
+                + " background: var(--cb-blue-50, #eff6ff); border-left: 3px solid var(--cb-blue-500, #3b82f6);"
+                + cursor
+                + outline
+            )
             if deleting:
                 row_style += " opacity: 0.5; cursor: not-allowed;"
         elif deleting:
@@ -1600,8 +1609,9 @@ class ProjectsOverview:
                         )
                         if is_current:
                             ui.label("CURRENT").style(
-                                f"{FONT} font-size: 7px; color: #1e40af; font-weight: 700; "
-                                "background: #dbeafe; border: 1px solid #93c5fd; "
+                                f"{FONT} font-size: 7px; color: var(--cb-blue-800, #1e40af); font-weight: 700; "
+                                "background: var(--cb-blue-100, #dbeafe); "
+                                "border: 1px solid var(--cb-blue-300, #93c5fd); "
                                 "border-radius: var(--cb-r-sm, 3px); padding: 0 4px; flex-shrink: 0; "
                                 "letter-spacing: 0.05em;"
                             )
@@ -1723,7 +1733,7 @@ class ProjectsOverview:
             .style(
                 f"width: {self._W_CHEVRON}px; flex-shrink: 0; display: flex; "
                 "align-items: center; justify-content: center; cursor: pointer; "
-                "background: #f8fafc; text-decoration: none; "
+                "background: var(--cb-slate-50, #f8fafc); text-decoration: none; "
                 "align-self: stretch; padding: 0;"
             )
         )
@@ -2241,7 +2251,7 @@ class ProjectsOverview:
             biggest = " · ".join(f"{lbl} {format_bytes(b)}" for lbl, b in top[:3] if b >= n / 100)
             rows.append(
                 f"<span>{html.escape(title)}</span><span style='text-align: right;'>{format_bytes(n)}</span>"
-                f"<span style='color: #475569;'>{html.escape(biggest)}</span>"
+                f"<span style='color: var(--cb-slate-600, #475569);'>{html.escape(biggest)}</span>"
             )
         body = (
             f"<div>{format_bytes(total)} on disk · measured {measured}</div>"
@@ -2497,7 +2507,7 @@ class ProjectsOverview:
             )
             ui.label(str(project_dir)).style(
                 f"{MONO} font-size: 10px; color: {CLR_SUBLABEL}; margin-top: 6px; "
-                "padding: 5px 7px; background: #f8fafc; border-radius: var(--cb-r-md, 4px); "
+                "padding: 5px 7px; background: var(--cb-slate-50, #f8fafc); border-radius: var(--cb-r-md, 4px); "
                 "word-break: break-all;"
             )
             with ui.row().classes("w-full justify-end mt-3 gap-2"):

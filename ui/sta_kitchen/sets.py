@@ -27,9 +27,9 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_TITLE = "font-size: 13px; font-weight: 600; color: #0f172a;"
-_CELL = "font-size: 10px; color: #334155;"
-_MONO = "font-family: 'IBM Plex Mono', monospace; font-size: 10px; color: #334155;"
+_TITLE = "font-size: 13px; font-weight: 600; color: var(--cb-slate-900, #0f172a);"
+_CELL = "font-size: 10px; color: var(--cb-slate-700, #334155);"
+_MONO = "font-family: 'IBM Plex Mono', monospace; font-size: 10px; color: var(--cb-slate-700, #334155);"
 _WRAP = "white-space: normal; line-height: 1.45;"
 # Conflicted acquisitions listed one by one; the "prefer" buttons cover the rest.
 CONFLICTS_LISTED = 30

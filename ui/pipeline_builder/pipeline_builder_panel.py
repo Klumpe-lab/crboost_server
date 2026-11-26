@@ -587,7 +587,7 @@ class PipelineBuilderPanel:
                 "text-sm text-gray-600 mt-2"
             )
             for line in refused:
-                ui.label(line).style("font-size: 11px; color: #b91c1c; white-space: normal;")
+                ui.label(line).style("font-size: 11px; color: var(--cb-red-700, #b91c1c); white-space: normal;")
             ui.label("Each job's I/O section shows them under its input.").classes("text-xs text-gray-500 mt-2")
             with ui.row().classes("mt-4 gap-2 justify-end w-full"):
                 house_button("Close", dialog.close)

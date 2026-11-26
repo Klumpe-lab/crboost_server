@@ -137,7 +137,9 @@ def _render_local_warp_chip(state, instance_id: str) -> None:
     with (
         ui.row()
         .classes("w-full items-center gap-2")
-        .style(f"background: #fffbeb; border: 1px solid #fde68a; {_CHIP_STYLE}")
+        .style(
+            f"background: var(--cb-amber-50, #fffbeb); border: 1px solid var(--cb-amber-200, #fde68a); {_CHIP_STYLE}"
+        )
         .tooltip(tooltip)
     ):
         ui.icon("warning", size="14px").classes("text-amber-600")
@@ -154,7 +156,7 @@ def _draw_banner(title: str, body: str, ran_already: bool) -> None:
     with (
         ui.row()
         .classes("w-full items-center gap-2")
-        .style(f"background: #fef2f2; border: 1px solid #fca5a5; {_CHIP_STYLE}")
+        .style(f"background: var(--cb-red-50, #fef2f2); border: 1px solid var(--cb-red-300, #fca5a5); {_CHIP_STYLE}")
         .tooltip(body)
     ):
         ui.icon(icon, size="14px").classes("text-red-700")
@@ -291,9 +293,9 @@ def _render_box_vs_diameter_warning(container, state, species, job_model) -> Non
     with container:
         is_err = level == "error"
         bg = (
-            "background: #fef2f2; border: 1px solid #fecaca;"
+            "background: var(--cb-red-50, #fef2f2); border: 1px solid var(--cb-red-200, #fecaca);"
             if is_err
-            else "background: #fffbeb; border: 1px solid #fde68a;"
+            else "background: var(--cb-amber-50, #fffbeb); border: 1px solid var(--cb-amber-200, #fde68a);"
         )
         icon_color = "text-red-600" if is_err else "text-amber-600"
         text_color = "text-red-800" if is_err else "text-amber-800"

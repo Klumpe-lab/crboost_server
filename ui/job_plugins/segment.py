@@ -22,7 +22,7 @@ from ui.job_plugins import register_params_renderer
 from ui.job_plugins._field_styles import HELPER_STYLE, NOTE_INDENT, multi_choice_row, path_row
 from ui.job_plugins.default_renderer import render_default_params_card
 
-_WARN_STYLE = HELPER_STYLE + " color: #b45309;"
+_WARN_STYLE = HELPER_STYLE + " color: var(--cb-amber-700, #b45309);"
 # Under the box of a field row.
 _NOTE_STYLE = f" margin: 0 0 4px {NOTE_INDENT}px;"
 

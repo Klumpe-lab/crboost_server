@@ -64,10 +64,9 @@ def log_html(text: str) -> str:
 
 def log_pane(title: str, text: str, path: Path, *, max_h: str = "60vh") -> None:
     with ui.row().classes("w-full items-center no-wrap").style("gap: 6px;"):
-        ui.label(title).style(
-            f"{MONO} font-size: 9px; color: {'#dc2626' if title == 'stderr' else '#475569'}; font-weight: 600;"
-        )
-        ui.label(path.name).style(f"{MONO} font-size: 9px; color: #94a3b8;")
+        ink = "var(--cb-red-600, #dc2626)" if title == "stderr" else "var(--cb-slate-600, #475569)"
+        ui.label(title).style(f"{MONO} font-size: 9px; color: {ink}; font-weight: 600;")
+        ui.label(path.name).style(f"{MONO} font-size: 9px; color: var(--cb-slate-400, #94a3b8);")
         ui.space()
         icon_button("content_copy", lambda p=path: copy_full_log(p), tooltip=f"Copy the full {title} to the clipboard")
     ui.html(log_html(text), sanitize=False).classes("cb-log-well w-full").style(f"max-height: {max_h};")
@@ -200,7 +199,8 @@ class LogViewer:
                 ui.label("")
                 .classes("cb-copy-path")
                 .style(
-                    f"{MONO} font-size: 9px; color: #94a3b8; overflow: hidden; text-overflow: ellipsis; "
+                    f"{MONO} font-size: 9px; color: var(--cb-slate-400, #94a3b8); overflow: hidden; "
+                    "text-overflow: ellipsis; "
                     "white-space: nowrap; min-width: 0;"
                 )
                 .on("click.stop", self._copy_path)
@@ -208,9 +208,9 @@ class LogViewer:
             self._live = ui.row().classes("items-center no-wrap").style("gap: 4px; flex-shrink: 0;")
             with self._live:
                 ui.element("div").classes("cb-live-pulse").style(
-                    "width: 6px; height: 6px; border-radius: 50%; background: #3b82f6;"
+                    "width: 6px; height: 6px; border-radius: 50%; background: var(--cb-blue-500, #3b82f6);"
                 )
-                ui.label("live").style(f"{SANS} font-size: 9px; color: #3b82f6;")
+                ui.label("live").style(f"{SANS} font-size: 9px; color: var(--cb-blue-500, #3b82f6);")
             self._live.set_visibility(False)
             ui.space()
             self._sid_label: ui.label | None = None
@@ -218,7 +218,10 @@ class LogViewer:
                 self._sid_label = (
                     ui.label("")
                     .classes("cb-copy-path")
-                    .style(f"{MONO} font-size: 9px; color: #64748b; flex-shrink: 0; white-space: nowrap;")
+                    .style(
+                        f"{MONO} font-size: 9px; color: var(--cb-slate-500, #64748b); flex-shrink: 0; "
+                        "white-space: nowrap;"
+                    )
                     .on("click.stop", self._copy_sid)
                 )
                 self._sid_label.props["title"] = "The job's SLURM id · click to copy"
@@ -303,7 +306,9 @@ def job_log_placeholder(instance_id: str, ui_mgr) -> None:
     rebuilt once the job has a directory, so its logs show."""
     with ui.column().classes("w-full h-full items-center justify-center gap-2") as placeholder:
         ui.icon("schedule", size="24px").style("color: #cbd5e1;")
-        ui.label("Scheduled · its logs show here once it runs").style(f"{SANS} font-size: 11px; color: #94a3b8;")
+        ui.label("Scheduled · its logs show here once it runs").style(
+            f"{SANS} font-size: 11px; color: var(--cb-slate-400, #94a3b8);"
+        )
     if not ui_mgr.is_running:
         return
 

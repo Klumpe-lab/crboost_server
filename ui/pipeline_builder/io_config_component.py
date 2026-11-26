@@ -152,8 +152,8 @@ _ROW_STYLE = "display: flex; align-items: center; gap: 6px; width: 100%; min-wid
 # The lines under a row (its file, a set's lineage and facets, notes) start under the slot word.
 _DETAIL_STYLE = "padding-left: 24px; width: 100%; min-width: 0;"
 _HAIRLINE_STYLE = "height: 1px; width: 100%; background: var(--cb-line, #e4eaf1); margin: 5px 0 3px;"
-_PATH_COLOR = "#64748b"
-_MUTED = "#94a3b8"
+_PATH_COLOR = "var(--cb-slate-500, #64748b)"
+_MUTED = "var(--cb-slate-400, #94a3b8)"
 # Secondary text (status words, notes, tags) is one size everywhere.
 _SMALL = f"{FONT} font-size: 9px;"
 _DOT = "width: 7px; height: 7px; border-radius: var(--cb-pip-radius, 50%); flex-shrink: 0;"
@@ -161,22 +161,24 @@ _DOT = "width: 7px; height: 7px; border-radius: var(--cb-pip-radius, 50%); flex-
 _HOLLOW = "var(--cb-ink-4, #94a3b8)"
 # The app tooltip's panel and frame come from ui/dashboard/css.py; only the room is set here.
 _TIP_PANEL_STYLE = "padding: 8px 10px; max-width: 380px;"
-_TIP_TITLE = f"{FONT} font-size: 11px; font-weight: 700; color: #0f172a;"
-_TIP_LEAD = f"{FONT} font-size: 10px; color: #334155; margin-top: 1px;"
-_TIP_KEY = f"{FONT} font-size: 10px; font-weight: 600; color: #1e293b;"
-_TIP_DESC = f"{FONT} font-size: 10px; color: #475569; line-height: 1.35;"
-_TIP_PATH = f"{MONO} font-size: 10px; color: #334155; word-break: break-all; white-space: normal;"
+_TIP_TITLE = f"{FONT} font-size: 11px; font-weight: 700; color: var(--cb-slate-900, #0f172a);"
+_TIP_LEAD = f"{FONT} font-size: 10px; color: var(--cb-slate-700, #334155); margin-top: 1px;"
+_TIP_KEY = f"{FONT} font-size: 10px; font-weight: 600; color: var(--cb-slate-800, #1e293b);"
+_TIP_DESC = f"{FONT} font-size: 10px; color: var(--cb-slate-600, #475569); line-height: 1.35;"
+_TIP_PATH = f"{MONO} font-size: 10px; color: var(--cb-slate-700, #334155); word-break: break-all; white-space: normal;"
 _GREEN = "#10b981"
-_TEXT = "#334155"
+_TEXT = "var(--cb-slate-700, #334155)"
 # A facet line under a kitchen set's row: its name in a column of its own, a dot, what it reads.
 _FACET_ROW = "display: flex; align-items: center; gap: 6px; min-width: 0; flex-wrap: wrap;"
 _FACET_NAME = f"{_SMALL} color: {_PATH_COLOR}; width: 40px; flex-shrink: 0;"
 _PICK_BOX = (
-    "display: flex; align-items: center; gap: 4px; cursor: pointer; padding: 0 5px; border: 1px solid #e2e8f0; "
-    "border-radius: var(--cb-r-md, 4px); background: #fff; height: 18px; box-sizing: border-box;"
+    "display: flex; align-items: center; gap: 4px; cursor: pointer; padding: 0 5px; "
+    "border: 1px solid var(--cb-slate-200, #e2e8f0); "
+    "border-radius: var(--cb-r-md, 4px); background: var(--cb-white, #fff); height: 18px; box-sizing: border-box;"
 )
 _MENU_STYLE = (
-    "border: 1px solid #e2e8f0; border-radius: var(--cb-r-lg, 6px); box-shadow: 0 8px 24px rgba(15,23,42,0.14); "
+    "border: 1px solid var(--cb-slate-200, #e2e8f0); border-radius: var(--cb-r-lg, 6px); "
+    "box-shadow: 0 8px 24px rgba(15,23,42,0.14); "
     "min-width: 240px;"
 )
 _FACET_WORD = {IMAGES: "particle images", POSES: "poses"}
@@ -557,7 +559,7 @@ class IOConfigComponent:
                 inp.classes("cb-select").props(
                     "dense borderless hide-bottom-space "
                     "input-style=\"font-family: 'IBM Plex Mono', monospace; font-size: 11px; "
-                    'color: #1e293b; padding: 1px 2px; min-height: 0;"'
+                    'color: var(--cb-slate-800, #1e293b); padding: 1px 2px; min-height: 0;"'
                 )
                 inp.style("flex: 1 1 0; min-width: 0;")
                 icon_button("folder_open", lambda s=slot: self._open_file_picker(s), tooltip="Browse…")
@@ -790,7 +792,9 @@ class IOConfigComponent:
                     row.on("click", lambda _e, r=ref, m=menu: self._pick_facet(slot, {pf.key: r}, m))
                     with row:
                         ui.element("div").style(f"{_DOT} background: {_GREEN};")
-                        ui.label(s.label).style(f"{FONT} font-size: 11px; color: #1e293b; flex: 1 1 0; min-width: 0;")
+                        ui.label(s.label).style(
+                            f"{FONT} font-size: 11px; color: var(--cb-slate-800, #1e293b); flex: 1 1 0; min-width: 0;"
+                        )
                         detail = " · ".join(x for x in (self._geometry_text(s), held) if x)
                         ui.label(detail).style(f"{_SMALL} color: {_MUTED}; flex-shrink: 0;")
         box.on("click", lambda _e, m=menu: m.open())
@@ -900,8 +904,9 @@ class IOConfigComponent:
             # The .cb-select box: 20 px tall, 1 px slate border, 5 px side padding.
             .style(
                 "flex: 1 1 0; min-width: 0; display: flex; align-items: center; gap: 6px; "
-                "cursor: pointer; padding: 0 5px; border: 1px solid #e2e8f0; border-radius: var(--cb-r-md, 4px); "
-                "background: #fff; height: 20px; box-sizing: border-box;"
+                "cursor: pointer; padding: 0 5px; border: 1px solid var(--cb-slate-200, #e2e8f0); "
+                "border-radius: var(--cb-r-md, 4px); "
+                "background: var(--cb-white, #fff); height: 20px; box-sizing: border-box;"
             )
         )
         with selector:
@@ -917,7 +922,7 @@ class IOConfigComponent:
                 ui.menu()
                 .props('no-parent-event anchor="bottom left" self="top left"')
                 .style(
-                    "border: 1px solid #e2e8f0; "
+                    "border: 1px solid var(--cb-slate-200, #e2e8f0); "
                     "border-radius: var(--cb-r-lg, 6px); box-shadow: 0 8px 24px rgba(15,23,42,0.14); "
                     "min-width: 240px;"
                 )
@@ -936,7 +941,7 @@ class IOConfigComponent:
                     self._render_menu_candidate(
                         slot, c, menu, selected=(c.source_key == current_value), skipped=skipped.get(c.source_key)
                     )
-                ui.element("div").style("height: 1px; background: #eef2f6; margin: 2px 0;")
+                ui.element("div").style("height: 1px; background: var(--cb-x-eef2f6, #eef2f6); margin: 2px 0;")
                 self._render_menu_row(
                     slot,
                     menu,
@@ -986,7 +991,7 @@ class IOConfigComponent:
     def _render_menu_row(self, slot, menu, value, color, name, status_word, selected: bool, skipped: str | None = None):
         """One menu option. `skipped` (an `auto_exclusion` reason) dims a source automatic
         wiring never picks; it stays selectable."""
-        bg = "background: #eef2f6;" if selected else ""
+        bg = "background: var(--cb-x-eef2f6, #eef2f6);" if selected else ""
         dim = "opacity: 0.55;" if skipped else ""
         row = (
             ui.element("div")
@@ -997,7 +1002,7 @@ class IOConfigComponent:
         with row:
             ui.element("div").style(f"{_DOT} background: {color};")
             ui.label(name).style(
-                f"{FONT} font-size: 11px; color: #1e293b; flex: 1 1 0; min-width: 0; "
+                f"{FONT} font-size: 11px; color: var(--cb-slate-800, #1e293b); flex: 1 1 0; min-width: 0; "
                 "overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"
             )
             if skipped:
@@ -1012,9 +1017,9 @@ class IOConfigComponent:
         only offers to add the extraction that reads it, and to point this input at that job's particles."""
         with ui.element("div").style("padding: 4px 10px; cursor: default;"):
             with ui.element("div").style("display: flex; align-items: center; gap: 8px; opacity: 0.5;"):
-                ui.element("div").style(f"{_DOT} background: #cbd5e1;")
+                ui.element("div").style(f"{_DOT} background: var(--cb-slate-300, #cbd5e1);")
                 ui.label(_candidate_name(c)).style(
-                    f"{FONT} font-size: 11px; color: #1e293b; flex: 1 1 0; min-width: 0; "
+                    f"{FONT} font-size: 11px; color: var(--cb-slate-800, #1e293b); flex: 1 1 0; min-width: 0; "
                     "overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"
                 )
             ui.label(reason).style(f"{_SMALL} color: {_PATH_COLOR}; padding-left: 15px; white-space: normal;")
@@ -1094,7 +1099,7 @@ class IOConfigComponent:
                 ui.label(info[1]).style(_TIP_DESC + " margin-top: 2px;")
             if not resolved:
                 ui.label("Predicted — exists once this job finishes.").style(
-                    f"{FONT} font-size: 10px; color: #b45309; margin-top: 3px;"
+                    f"{FONT} font-size: 10px; color: var(--cb-amber-700, #b45309); margin-top: 3px;"
                 )
         return name
 

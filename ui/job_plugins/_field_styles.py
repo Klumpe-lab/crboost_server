@@ -23,11 +23,11 @@ from ui.components.svg_icon import render_glyph
 MONO = "font-family: 'IBM Plex Mono', monospace;"
 SANS = "font-family: 'IBM Plex Sans', sans-serif;"
 
-CLR_LABEL = "#64748b"  # slate-500
-CLR_VALUE = "#1e293b"  # slate-800
-CLR_HEADER = "#475569"  # slate-600
-CLR_SUBLABEL = "#94a3b8"  # slate-400
-CLR_BORDER = "#e2e8f0"  # slate-200
+CLR_LABEL = "var(--cb-slate-500, #64748b)"  # slate-500
+CLR_VALUE = "var(--cb-slate-800, #1e293b)"  # slate-800
+CLR_HEADER = "var(--cb-slate-600, #475569)"  # slate-600
+CLR_SUBLABEL = "var(--cb-slate-400, #94a3b8)"  # slate-400
+CLR_BORDER = "var(--cb-slate-200, #e2e8f0)"  # slate-200
 
 # The label column of label/value rows outside the job form (the agent's plan page, the napari dialog); a look may
 # set it (`--cb-label-w`). The job form's own is FIELD_LABEL_W.
@@ -35,9 +35,9 @@ LABEL_W = 110
 
 
 def voice(kind: str, *, font: str, size: str, weight: int | str, ink: str, case: str = "none", track: str = "0") -> str:
-    """A voice's type as CSS variables (`--cb-<kind>-font/size/weight/case/track/ink`, ui/dashboard/css.py
-    `_THEME_CSS`), today's look in the fallbacks: a look sets the variables and every label, control, badge or
-    column head in that voice changes at once (roadmap 51 §6)."""
+    """A voice's type as CSS variables (`--cb-<kind>-font/size/weight/case/track/ink`, ui/dashboard/theme.py),
+    today's look in the fallbacks: a look sets the variables and every label, control, badge or column head in that
+    voice changes at once (roadmap 51 §6)."""
     return (
         f"font-family: var(--cb-{kind}-font, {font}); font-size: var(--cb-{kind}-size, {size}); "
         f"font-weight: var(--cb-{kind}-weight, {weight}); text-transform: var(--cb-{kind}-case, {case}); "
@@ -88,7 +88,8 @@ def box_style(width: str) -> str:
 # A read-only value in the box's place, drawn as the box (a frozen job's path).
 FROZEN_BOX_STYLE = (
     "height: 20px; box-sizing: border-box; display: flex; align-items: center; padding: 0 5px; "
-    "border: 1px solid var(--cb-field-line, #d3dde8); border-radius: var(--cb-field-radius, 2px); background: #f8fafc;"
+    "border: 1px solid var(--cb-field-line, #d3dde8); border-radius: var(--cb-field-radius, 2px); "
+    "background: var(--cb-slate-50, #f8fafc);"
 )
 
 VALUE_WRAP_STYLE = f"{MONO} font-size: 11px; color: {CLR_VALUE}; flex: 1 1 0; min-width: 0;"
@@ -122,7 +123,8 @@ PATH_LABEL_W = LABEL_W
 # larger size, not uppercase + letter-spacing, so the visual hierarchy is
 # bold-vs-regular rather than caps-vs-lowercase.
 SECTION_HEADER_STYLE = (
-    f"{SANS} font-size: 11px; font-weight: 600; color: #33506e; line-height: 1; margin: 8px 0 4px 0; display: block;"
+    f"{SANS} font-size: 11px; font-weight: 600; color: var(--cb-x-33506e, #33506e); line-height: 1; "
+    "margin: 8px 0 4px 0; display: block;"
 )
 SECTION_HEADER_FIRST_STYLE = SECTION_HEADER_STYLE.replace("margin: 8px 0 4px 0", "margin: 0 0 4px 0")
 
@@ -136,7 +138,7 @@ PAGE_SECTION_STYLE = (
 
 # A page's large blocks outside the job page (a dialog's block, a Species tab's panel): a panel under its Rule head
 # (`section_head`). Colours, radius, padding and lines are the style's CSS variables (`--cb-*`,
-# ui/dashboard/css.py `_THEME_CSS`); each fallback is the default style's value. One box deep: the ring, fill and
+# ui/dashboard/theme.py); each fallback is the default style's value. One box deep: the ring, fill and
 # shadow are the section's (`--cb-section-*`), which a look makes transparent inside a card. The padding goes in as
 # longhands: a `var()` padding shorthand loses its other longhands in Chromium once one of them is set.
 PANEL_STYLE = (
@@ -169,7 +171,7 @@ VIEW_TITLE_STYLE = (
     "color: var(--cb-view-head-ink, #12324f); letter-spacing: 0.01em; white-space: nowrap; overflow: hidden; "
     "text-overflow: ellipsis; min-width: 0;"
 )
-VIEW_ICON_COLOR = "#4a6584"
+VIEW_ICON_COLOR = "var(--cb-x-4a6584, #4a6584)"
 
 
 def view_head_icon(icon: str):
@@ -300,9 +302,12 @@ def toggle_row():
 _INPUT_PROPS_BASE = "dense borderless hide-bottom-space"
 # Style applied to the inner <input> via Quasar's input-style prop.
 _INPUT_INNER_STYLE = (
-    "font-family: 'IBM Plex Mono', monospace; font-size: 10.5px; color: #1e293b; padding: 1px 2px; min-height: 0;"
+    "font-family: 'IBM Plex Mono', monospace; font-size: 10.5px; color: var(--cb-slate-800, #1e293b); "
+    "padding: 1px 2px; min-height: 0;"
 )
-_INPUT_INNER_FROZEN = _INPUT_INNER_STYLE.replace("color: #1e293b", "color: #94a3b8")
+_INPUT_INNER_FROZEN = _INPUT_INNER_STYLE.replace(
+    "color: var(--cb-slate-800, #1e293b)", "color: var(--cb-slate-400, #94a3b8)"
+)
 
 
 def _attach_input(inp, *, is_frozen: bool, width: str):

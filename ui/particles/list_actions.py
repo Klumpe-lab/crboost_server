@@ -298,7 +298,8 @@ async def open_extraction_logs(backend, project_path: Path, job: ExtractJob, *, 
                 ui.log(max_lines=_LOG_WIDGET_LINES)
                 .classes("w-full p-2")
                 .style(
-                    f"height: 12rem; overflow-y: auto; {_MONO} font-size: 10px; line-height: 1.4; background: #fafafa;"
+                    f"height: 12rem; overflow-y: auto; {_MONO} font-size: 10px; line-height: 1.4; "
+                    "background: var(--cb-zinc-50, #fafafa);"
                 )
             )
             ui.label("run.err").classes("text-[10px] font-bold text-gray-500 uppercase tracking-wider")
@@ -307,7 +308,7 @@ async def open_extraction_logs(backend, project_path: Path, job: ExtractJob, *, 
                 .classes("w-full p-2")
                 .style(
                     f"height: 7rem; overflow-y: auto; {_MONO} font-size: 10px; line-height: 1.4; "
-                    "color: #b91c1c; background: #fefafa;"
+                    "color: var(--cb-red-700, #b91c1c); background: var(--cb-x-fefafa, #fefafa);"
                 )
             )
 

@@ -21,8 +21,8 @@ from ui.dataset_overview_panel import build_dataset_overview_panel, render_parse
 from ui.job_plugins._field_styles import PANEL_STYLE, section_head
 from ui.styles import MONO, SANS as FONT
 
-CLR_LABEL = "#475569"
-CLR_SUBLABEL = "#94a3b8"
+CLR_LABEL = "var(--cb-slate-600, #475569)"
+CLR_SUBLABEL = "var(--cb-slate-400, #94a3b8)"
 CLR_WARN = "#d97706"
 
 SPLIT_PER_FOLDER = "per_folder"

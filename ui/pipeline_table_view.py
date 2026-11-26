@@ -59,7 +59,7 @@ _ROW_STYLE = (
 )
 _HEAD_STYLE = (
     f"{SANS} font-size: 9px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; "
-    "color: #94a3b8; white-space: nowrap;"
+    "color: var(--cb-slate-400, #94a3b8); white-space: nowrap;"
 )
 _CELL = "display: flex; align-items: center; gap: 5px; min-width: 0; white-space: nowrap;"
 _TS_TIP = "Tilt series finished, of the job's list. ▸ running now · ⊘ skipped · ! failed"
@@ -158,11 +158,17 @@ def _render_progress(p: TaskProgress | None) -> None:
             color = "#2563eb" if p.n_settled else "#9ca3af"
         ui.label(f"{p.n_ok}/{p.total}").style(f"{MONO} font-size: 10px; font-weight: 600; color: {color};")
         if p.n_running:
-            ui.label(f"▸{p.n_running}").style(f"{MONO} font-size: 9px; font-weight: 700; color: #2563eb;")
+            ui.label(f"▸{p.n_running}").style(
+                f"{MONO} font-size: 9px; font-weight: 700; color: var(--cb-blue-600, #2563eb);"
+            )
         if p.n_skip:
-            ui.label(f"⊘{p.n_skip}").style(f"{MONO} font-size: 9px; font-weight: 600; color: #94a3b8;")
+            ui.label(f"⊘{p.n_skip}").style(
+                f"{MONO} font-size: 9px; font-weight: 600; color: var(--cb-slate-400, #94a3b8);"
+            )
         if p.n_fail:
-            ui.label(f"{p.n_fail}!").style(f"{MONO} font-size: 9px; font-weight: 700; color: #dc2626;")
+            ui.label(f"{p.n_fail}!").style(
+                f"{MONO} font-size: 9px; font-weight: 700; color: var(--cb-red-600, #dc2626);"
+            )
 
 
 def _legend_line(solid: bool) -> str:
@@ -310,7 +316,7 @@ class PipelineTablePage:
                 for solid, text in ((True, "fixed at submit or set by hand"), (False, "automatic, may still change")):
                     with ui.element("div").style("display: flex; align-items: center; gap: 5px;"):
                         ui.html(_legend_line(solid), sanitize=False)
-                        ui.label(text).style(f"{SANS} font-size: 9px; color: #64748b;")
+                        ui.label(text).style(f"{SANS} font-size: 9px; color: var(--cb-slate-500, #64748b);")
             body = ui.element("div").style("width: 100%;")
             with body, ui.element("div").classes("cb-empty"):
                 ui.spinner(size="lg", color="indigo")
@@ -335,7 +341,7 @@ class _TableView(FingerprintedView):
         p.elapsed_labels = {}
         if p.error:
             ui.label(f"Could not read the pipeline: {p.error}").style(
-                f"{SANS} font-size: 10px; color: #b45309; margin-bottom: 6px;"
+                f"{SANS} font-size: 10px; color: var(--cb-amber-700, #b45309); margin-bottom: 6px;"
             )
         if not p.rows:
             if not p.error:
@@ -379,7 +385,9 @@ class _TableView(FingerprintedView):
                 "line-height: 0;"
             )
             with ui.element("div").style(_CELL + " gap: 6px;"):
-                ui.label(instance_display_name(iid, jm)).style(f"{MONO} font-size: 11px; color: #1e293b;")
+                ui.label(instance_display_name(iid, jm)).style(
+                    f"{MONO} font-size: 11px; color: var(--cb-slate-800, #1e293b);"
+                )
                 species = state.get_species(jm.species_id) if jm.species_id else None
                 tip = _inputs_tip(row, state)
                 if species is not None:
@@ -390,19 +398,20 @@ class _TableView(FingerprintedView):
                     ui.tooltip(tip).style("white-space: pre-line;").props("delay=400")
             self._render_state(row, jm, state, parked)
             _render_progress(p.progress.get(iid))
-            p.elapsed_labels[iid] = ui.label("").style(f"{MONO} font-size: 10px; color: #475569;")
+            p.elapsed_labels[iid] = ui.label("").style(f"{MONO} font-size: 10px; color: var(--cb-slate-600, #475569);")
 
     @staticmethod
     def _render_state(row: TableRow, jm, state: ProjectState, parked: bool) -> None:
         status = jm.execution_status
         if jm.is_orphaned:
-            text, color = "missing inputs", "color: #c2410c;"
+            text, color = "missing inputs", "color: var(--cb-orange-700, #c2410c);"
             tip = "; ".join(str(m) for m in jm.missing_inputs) or "An input has no source."
         elif parked and status == JobStatus.SCHEDULED:
-            text, color = "waits for review", "color: #b45309;"
+            text, color = "waits for review", "color: var(--cb-amber-700, #b45309);"
             tip = "Parked behind the tilt-filter review; Approve submits it."
         else:
-            text, color = status.value.lower(), _BADGE_STYLES.get(status, ("", "color: #1f2937;"))[1]
+            text = status.value.lower()
+            color = _BADGE_STYLES.get(status, ("", "color: var(--cb-gray-800, #1f2937);"))[1]
             tip = None
             if status in _LIVE and jm.slurm_job_id:
                 live = {iid for iid, m in state.jobs.items() if m.execution_status in _LIVE}

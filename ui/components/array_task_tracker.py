@@ -68,10 +68,10 @@ SUPERVISOR = ""
 
 _ROW_STYLE = "display: flex; align-items: center; gap: 6px; height: 20px; padding: 0 8px 0 10px; min-width: 0;"
 _NAME_STYLE = (
-    f"{MONO} font-size: 10px; color: #334155; flex: 1 1 auto; min-width: 0; "
+    f"{MONO} font-size: 10px; color: var(--cb-slate-700, #334155); flex: 1 1 auto; min-width: 0; "
     "overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"
 )
-_ID_STYLE = f"{MONO} font-size: 9px; color: #94a3b8; flex-shrink: 0; white-space: nowrap;"
+_ID_STYLE = f"{MONO} font-size: 9px; color: var(--cb-slate-400, #94a3b8); flex-shrink: 0; white-space: nowrap;"
 
 
 # ── Public API ──
@@ -96,15 +96,17 @@ def _summary_html(statuses: dict[str, str], item_label: str) -> str:
 
     parts = []
     if p.n_ok:
-        parts.append(f'<span style="color: #16a34a; font-weight: 600;">{p.n_ok} done</span>')
+        parts.append(f'<span style="color: var(--cb-green-600, #16a34a); font-weight: 600;">{p.n_ok} done</span>')
     if p.n_running:
-        parts.append(f'<span style="color: #2563eb; font-weight: 600;">{p.n_running} running</span>')
+        parts.append(
+            f'<span style="color: var(--cb-blue-600, #2563eb); font-weight: 600;">{p.n_running} running</span>'
+        )
     if p.n_fail:
-        parts.append(f'<span style="color: #dc2626; font-weight: 600;">{p.n_fail} failed</span>')
+        parts.append(f'<span style="color: var(--cb-red-600, #dc2626); font-weight: 600;">{p.n_fail} failed</span>')
     if p.n_skip:
-        parts.append(f'<span style="color: #94a3b8;">{p.n_skip} skipped</span>')
+        parts.append(f'<span style="color: var(--cb-slate-400, #94a3b8);">{p.n_skip} skipped</span>')
     if p.n_pending:
-        parts.append(f'<span style="color: #9ca3af;">{p.n_pending} pending</span>')
+        parts.append(f'<span style="color: var(--cb-gray-400, #9ca3af);">{p.n_pending} pending</span>')
 
     return f'<span style="{MONO} font-size: 10px;">{" · ".join(parts)} / {p.total} {item_label.lower()}</span>'
 
@@ -165,7 +167,9 @@ class _TaskPanel:
                 "border-right: 1px solid var(--cb-box-line, #dbe3ec);"
             )
             with self.list:
-                with ui.element("div").style("position: sticky; top: 0; z-index: 1; background: #ffffff;"):
+                with ui.element("div").style(
+                    "position: sticky; top: 0; z-index: 1; background: var(--cb-white, #ffffff);"
+                ):
                     self.summary = ui.html("", sanitize=False).style("display: block; padding: 6px 10px 4px;")
                     self.summary.set_visibility(False)
                     self.bar = (
@@ -177,7 +181,8 @@ class _TaskPanel:
                     self.bar.set_visibility(False)
                     self.rows[SUPERVISOR] = self._supervisor_row()
                 self.note = ui.label("Tasks show once the supervisor submits them").style(
-                    f"{SANS} font-size: 10px; color: #94a3b8; font-style: italic; padding: 8px 10px;"
+                    f"{SANS} font-size: 10px; color: var(--cb-slate-400, #94a3b8); font-style: italic; "
+                    "padding: 8px 10px;"
                 )
                 self.body = ui.element("div").style("display: flex; flex-direction: column;")
             # The log of the selected row: the rest of the width, its own scroll.
@@ -206,7 +211,7 @@ class _TaskPanel:
         row = (
             ui.element("div")
             .classes("cb-tlog-row")
-            .style(f"{_ROW_STYLE} height: 24px; border-bottom: 1px solid #e3eaf2;")
+            .style(f"{_ROW_STYLE} height: 24px; border-bottom: 1px solid var(--cb-x-e3eaf2, #e3eaf2);")
         )
         row.props["title"] = "The job's own log: run.out and run.err"
         row.on("click", lambda: self.select(SUPERVISOR))
@@ -215,7 +220,8 @@ class _TaskPanel:
                 "display: inline-flex; width: 12px; justify-content: center; flex-shrink: 0;"
             )
             ui.label("Supervisor").style(
-                f"{SANS} font-size: 10px; font-weight: 600; color: #12324f; flex: 1 1 auto; min-width: 0;"
+                f"{SANS} font-size: 10px; font-weight: 600; color: var(--cb-x-12324f, #12324f); flex: 1 1 auto; "
+                "min-width: 0;"
             )
             sid = ui.label("—").classes("cb-tlog-copy").style(_ID_STYLE)
             sid.on("click.stop", lambda: self._click_copy(SUPERVISOR, self._supervisor_sid()))

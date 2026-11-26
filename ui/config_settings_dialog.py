@@ -33,10 +33,10 @@ from ui.styles import MONO, SANS as FONT
 
 logger = logging.getLogger(__name__)
 
-CLR_HEADING = "#0f172a"
-CLR_LABEL = "#475569"
-CLR_SUBLABEL = "#94a3b8"
-CLR_BORDER = "#e2e8f0"
+CLR_HEADING = "var(--cb-slate-900, #0f172a)"
+CLR_LABEL = "var(--cb-slate-600, #475569)"
+CLR_SUBLABEL = "var(--cb-slate-400, #94a3b8)"
+CLR_BORDER = "var(--cb-slate-200, #e2e8f0)"
 CLR_ACCENT = "#2563eb"
 CLR_OK = "#10b981"
 CLR_BAD = "#ef4444"
@@ -70,12 +70,12 @@ _TOOLS_HINT = "SIF image (container) or executable (binary). Green dot = the fil
 
 def _dot_style(exists: bool, empty_ok: bool = False) -> str:
     if empty_ok:
-        color = "#cbd5e1"
+        color = "var(--cb-slate-300, #cbd5e1)"
     else:
         color = CLR_OK if exists else CLR_BAD
     return (
         f"width: 8px; height: 8px; border-radius: 50%; background: {color}; "
-        "flex-shrink: 0; box-shadow: 0 0 0 2px #ffffff;"
+        "flex-shrink: 0; box-shadow: 0 0 0 2px var(--cb-white, #ffffff);"
     )
 
 
@@ -153,23 +153,28 @@ def _override_badge(cs) -> None:
             .style(
                 "display: flex; align-items: center; gap: 5px; padding: 3px 9px; "
                 "border-radius: var(--cb-r-pill, 20px); "
-                "background: #eff6ff; border: 1px solid #bfdbfe; flex-shrink: 0;"
+                "background: var(--cb-blue-50, #eff6ff); border: 1px solid var(--cb-blue-200, #bfdbfe); flex-shrink: 0;"
             )
             .tooltip(f"Your personal override is active:\n{cs.user_override_path}")
         ):
             ui.element("div").style(f"width: 6px; height: 6px; border-radius: 50%; background: {CLR_ACCENT};")
-            ui.label("custom config").style(f"{FONT} font-size: 10px; font-weight: 600; color: #1e40af;")
+            ui.label("custom config").style(
+                f"{FONT} font-size: 10px; font-weight: 600; color: var(--cb-blue-800, #1e40af);"
+            )
     else:
         with (
             ui.element("div")
             .style(
                 "display: flex; align-items: center; gap: 5px; padding: 3px 9px; "
                 "border-radius: var(--cb-r-pill, 20px); "
-                "background: #f1f5f9; border: 1px solid #e2e8f0; flex-shrink: 0;"
+                "background: var(--cb-slate-100, #f1f5f9); border: 1px solid var(--cb-slate-200, #e2e8f0); "
+                "flex-shrink: 0;"
             )
             .tooltip("Using the shared server defaults. Edits below are saved to your home folder only.")
         ):
-            ui.element("div").style("width: 6px; height: 6px; border-radius: 50%; background: #94a3b8;")
+            ui.element("div").style(
+                "width: 6px; height: 6px; border-radius: 50%; background: var(--cb-slate-400, #94a3b8);"
+            )
             ui.label("server defaults").style(f"{FONT} font-size: 10px; font-weight: 600; color: {CLR_LABEL};")
 
 
@@ -228,7 +233,7 @@ async def _confirm_revert(cs) -> bool:
         )
         ui.label(str(cs.user_override_path)).style(
             f"{MONO} font-size: 10px; color: {CLR_SUBLABEL}; margin-top: 6px; padding: 5px 7px; "
-            "background: #f8fafc; border-radius: var(--cb-r-md, 4px); word-break: break-all;"
+            "background: var(--cb-slate-50, #f8fafc); border-radius: var(--cb-r-md, 4px); word-break: break-all;"
         )
         with ui.row().classes("w-full justify-end mt-3 gap-2"):
             house_button("Cancel", lambda: d.submit(False))
@@ -422,7 +427,8 @@ def _profile_row(job_key: str, profile: dict[str, Any]) -> None:
         "align-items: start; padding: 4px 16px;"
     ):
         ui.label(display).style(
-            f"{MONO} font-size: 10px; color: #374151; text-align: right; overflow: hidden; text-overflow: ellipsis; "
+            f"{MONO} font-size: 10px; color: var(--cb-gray-700, #374151); text-align: right; overflow: hidden; "
+            "text-overflow: ellipsis; "
             "white-space: nowrap; line-height: 16px;"
         )
         with ui.element("div").style(_FIELD_GRID):

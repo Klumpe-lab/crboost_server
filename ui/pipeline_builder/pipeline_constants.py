@@ -21,10 +21,10 @@ ROSTER_ANCHOR: dict[str, str] = {
     PHASE_PARTICLES: "roster-anchor-particles",
 }
 
-SB_SEP = "#e2e8f0"
-SB_MUTE = "#94a3b8"
-SB_ACT = "#475569"
-SB_ABG = "#f1f5f9"
+SB_SEP = "var(--cb-slate-200, #e2e8f0)"
+SB_MUTE = "var(--cb-slate-400, #94a3b8)"
+SB_ACT = "var(--cb-slate-600, #475569)"
+SB_ABG = "var(--cb-slate-100, #f1f5f9)"
 
 
 def fmt(v) -> str:

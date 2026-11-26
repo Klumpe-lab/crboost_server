@@ -60,12 +60,12 @@ log = logging.getLogger(__name__)
 # surface, so they must not read as two applications. Steelblue is the single accent,
 # reserved for the curated/original highlight; everything else stays neutral slate.
 STEEL = "#4682b4"
-SLATE = "#475569"
-SLATE_MUTED = "#94a3b8"
-AMBER = "#b45309"
+SLATE = "var(--cb-slate-600, #475569)"
+SLATE_MUTED = "var(--cb-slate-400, #94a3b8)"
+AMBER = "var(--cb-amber-700, #b45309)"
 # The header, toolbar and action bars: a light-blue band ruled off from the body by a hairline.
-_BAR_TOP = "background: #f4f8fc; border-bottom: 1px solid #dbe3ec;"
-_BAR_BOTTOM = "background: #f4f8fc; border-top: 1px solid #dbe3ec;"
+_BAR_TOP = "background: var(--cb-x-f4f8fc, #f4f8fc); border-bottom: 1px solid var(--cb-x-dbe3ec, #dbe3ec);"
+_BAR_BOTTOM = "background: var(--cb-x-f4f8fc, #f4f8fc); border-top: 1px solid var(--cb-x-dbe3ec, #dbe3ec);"
 
 # The two payload grades (docs/particle-data-flow.md). The switch between them is a
 # real control in both dialogs' headers, not a text link: they are the two modes of
@@ -459,7 +459,7 @@ class _AggregateDialog:
         header = (
             ui.row()
             .classes("w-full items-center gap-2 px-2 py-1.5 cursor-pointer hover:bg-slate-50")
-            .style("border-bottom: 1px solid #eef2f6;")
+            .style("border-bottom: 1px solid var(--cb-x-eef2f6, #eef2f6);")
         )
         header.on("click", lambda _e, p=project_path: self.toggle_project(p))
         with header:
@@ -508,7 +508,7 @@ class _AggregateDialog:
         with (
             ui.element("div")
             .classes("w-full")
-            .style("padding-left: 22px; border-left: 2px solid #e2e8f0; margin-left: 9px;")
+            .style("padding-left: 22px; border-left: 2px solid var(--cb-slate-200, #e2e8f0); margin-left: 9px;")
         ):
             # Position-sorted high → low, matching the merge dialog and the roster.
             for tomo_name in sorted(by_tomo, key=ts_position_sort_key, reverse=True):
@@ -550,7 +550,7 @@ class _AggregateDialog:
         with (
             ui.element("div")
             .classes("w-full")
-            .style("padding-left: 22px; border-left: 1px solid #eef2f6; margin-left: 14px;")
+            .style("padding-left: 22px; border-left: 1px solid var(--cb-x-eef2f6, #eef2f6); margin-left: 14px;")
         ):
             for r in sorted(trows, key=lambda x: (not x.is_curated, x.list_type, x.slug)):
                 self._render_list(r)
@@ -564,7 +564,7 @@ class _AggregateDialog:
             # reading of merge_card's curated/original highlight, and the single accent
             # this dialog spends.
             ui.icon(glyph, size="11px").style(
-                f"color: {STEEL if r.is_curated else '#cbd5e1'}; flex-shrink: 0;"
+                f"color: {STEEL if r.is_curated else 'var(--cb-slate-300, #cbd5e1)'}; flex-shrink: 0;"
             ).tooltip(tip)
             ui.label(r.label or r.slug).style(
                 f"font-size: 11px; font-weight: {'600' if r.is_curated else '400'}; color: {SLATE}; flex-shrink: 0;"
@@ -573,7 +573,8 @@ class _AggregateDialog:
                 f"flex: 1; min-width: 0; font-family: monospace; font-size: 9px; color: {SLATE_MUTED};"
             ).tooltip(r.star_path)
             ui.label(r.list_type).style(
-                f"font-size: 9px; color: {SLATE_MUTED}; border: 1px solid #e2e8f0; border-radius: var(--cb-r-sm, 3px); "
+                f"font-size: 9px; color: {SLATE_MUTED}; border: 1px solid var(--cb-slate-200, #e2e8f0); "
+                "border-radius: var(--cb-r-sm, 3px); "
                 "padding: 0 4px; flex-shrink: 0;"
             )
             self._picks_cell(r.count, muted=not is_sel)
@@ -911,7 +912,7 @@ def open_aggregate_dialog(project_path) -> None:
         ui.dialog() as dlg,
         ui.card()
         .classes("w-[1060px] max-w-[96vw] max-h-[92vh] overflow-hidden border border-slate-200 bg-white p-0")
-        .style("color: #1e293b;"),
+        .style("color: var(--cb-slate-800, #1e293b);"),
     ):
         with ui.row().classes("w-full items-center gap-3 px-4 py-2").style(_BAR_TOP):
             ui.icon("merge_type", size="20px").style(f"color: {SLATE};")

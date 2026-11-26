@@ -135,7 +135,7 @@ class ControlsPanel:
         decoys = {k: s.label for k, (s, _r) in self.controls.items() if s.control == "decoy"}
         with ui.element("div").style("display: flex; align-items: center; gap: 10px; flex-wrap: wrap;"):
             house_select("decoy run", decoys, value=self._decoy_key, width="w-96", on_change=self._set_decoy)
-            self._fdr_text = ui.label("").style(f"{MONO} font-size: 10px; color: #1e293b;")
+            self._fdr_text = ui.label("").style(f"{MONO} font-size: 10px; color: var(--cb-slate-800, #1e293b);")
         with ui.element("div").style(f"width: 100%; max-width: 560px; {CHART_CELL_STYLE}"):
             self._fdr_chart = ui.echart(self._fdr_options()).style(f"height: {CHART_PX}px; width: 100%;")
         self._update_fdr()
@@ -168,7 +168,7 @@ class ControlsPanel:
         mirrors = {k: s.label for k, (s, _r) in self.controls.items() if s.control == "mirror"}
         with ui.element("div").style("display: flex; align-items: center; gap: 10px; flex-wrap: wrap;"):
             house_select("mirror run", mirrors, value=self._mirror_key, width="w-96", on_change=self._set_mirror)
-            self._hand_text = ui.label("").style(f"{MONO} font-size: 10px; color: #1e293b;")
+            self._hand_text = ui.label("").style(f"{MONO} font-size: 10px; color: var(--cb-slate-800, #1e293b);")
         self._update_hand()
 
     def _set_mirror(self, e) -> None:
@@ -215,7 +215,9 @@ class ControlsPanel:
                 "name": "with decoys",
             }
             with dialog_host(), ui.dialog() as dlg, ui.card().style("width: 600px; max-width: 95vw; gap: 8px;"):
-                ui.label("Random-position decoys").style("font-size: 13px; font-weight: 600; color: #0f172a;")
+                ui.label("Random-position decoys").style(
+                    "font-size: 13px; font-weight: 600; color: var(--cb-slate-900, #0f172a);"
+                )
                 ui.label(
                     "The new set holds the parent's picks plus the decoys, as coordinates: extract it, then classify."
                 ).classes(HINT_CLS)
@@ -306,7 +308,7 @@ class ControlsPanel:
                 on_change=lambda e: self._recall.update(radius=e.value),
             )
             house_button("Compute", lambda: self._compute_recall(own))
-            self._recall_text = ui.label("").style(f"{MONO} font-size: 10px; color: #1e293b;")
+            self._recall_text = ui.label("").style(f"{MONO} font-size: 10px; color: var(--cb-slate-800, #1e293b);")
         with ui.element("div").style(f"width: 100%; max-width: 560px; {CHART_CELL_STYLE}"):
             self._recall_chart = ui.echart(build_curves_chart([], [], x_name="σ", y_name="share")).style(
                 f"height: {CHART_PX}px; width: 100%;"
@@ -382,7 +384,7 @@ class ControlsPanel:
                 on_change=lambda e: self._halves.update(set=e.value),
             )
             house_button("Check", self._check_halves)
-            self._halves_text = ui.label("").style(f"{MONO} font-size: 10px; color: #1e293b;")
+            self._halves_text = ui.label("").style(f"{MONO} font-size: 10px; color: var(--cb-slate-800, #1e293b);")
 
     async def _check_halves(self) -> None:
         async with self._flight("halves") as acquired:

@@ -10,7 +10,7 @@ from services.dataset_scan import glob_in
 from ui.components.buttons import icon_button
 from ui.styles import MONO as _MONO
 
-_CLR_GHOST = "#d1d5db"
+_CLR_GHOST = "var(--cb-gray-300, #d1d5db)"
 _MAX_COMPLETIONS = 12
 _DEBOUNCE_SEC = 0.25
 
@@ -101,7 +101,8 @@ class GlobDirectoryInput:
 
             self._dropdown = ui.element("div").style(
                 "position: absolute; top: 100%; left: 0; right: 0; z-index: 9999; "
-                "background: white; border: 1px solid #e5e7eb; border-radius: var(--cb-r-md, 4px); "
+                "background: var(--cb-white, white); border: 1px solid var(--cb-gray-200, #e5e7eb); "
+                "border-radius: var(--cb-r-md, 4px); "
                 "box-shadow: 0 4px 12px rgba(0,0,0,0.10); display: none; "
                 "max-height: 260px; overflow-y: auto;"
             )
@@ -236,8 +237,8 @@ class GlobDirectoryInput:
             self._hide_dropdown()
             return
         row_style = (
-            f"{_MONO} font-size: 10px; color: #374151; padding: 5px 12px; text-align: left; "
-            "border-bottom: 1px solid #f3f4f6;"
+            f"{_MONO} font-size: 10px; color: var(--cb-gray-700, #374151); padding: 5px 12px; text-align: left; "
+            "border-bottom: 1px solid var(--cb-gray-100, #f3f4f6);"
         )
         with self._suggestion_col:
             for path_str in recents:
@@ -246,13 +247,19 @@ class GlobDirectoryInput:
                 with (
                     ui.row()
                     .classes("w-full items-center no-wrap")
-                    .style("gap: 0; background: #f0f9ff; border-left: 2px solid #f59e0b;")
+                    .style(
+                        "gap: 0; background: var(--cb-sky-50, #f0f9ff); "
+                        "border-left: 2px solid var(--cb-amber-500, #f59e0b);"
+                    )
                 ):
                     ui.button(path_str, on_click=lambda p=path_str: self.set_directory(p, commit=True)).props(
                         "flat no-caps align=left"
-                    ).classes("flex-1 min-w-0 rounded-none hover:bg-sky-100").style(row_style + " color: #0369a1;")
+                    ).classes("flex-1 min-w-0 rounded-none hover:bg-sky-100").style(
+                        row_style + " color: var(--cb-sky-700, #0369a1);"
+                    )
                     ui.label("recently viewed").style(
-                        "font-family: 'IBM Plex Sans', sans-serif; font-size: 8px; color: #f59e0b; "
+                        "font-family: 'IBM Plex Sans', sans-serif; font-size: 8px; "
+                        "color: var(--cb-amber-500, #f59e0b); "
                         "letter-spacing: 0.04em; white-space: nowrap; padding: 0 6px;"
                     )
                     if self._on_forget_recent:
@@ -266,6 +273,6 @@ class GlobDirectoryInput:
                 ).classes("w-full rounded-none hover:bg-blue-50").style(row_style)
             if len(subdirs) > len(shown):
                 ui.label(f"+{len(subdirs) - len(shown)} more — keep typing").style(
-                    f"{_MONO} font-size: 9px; color: #94a3b8; padding: 4px 12px;"
+                    f"{_MONO} font-size: 9px; color: var(--cb-slate-400, #94a3b8); padding: 4px 12px;"
                 )
         self._show_dropdown()

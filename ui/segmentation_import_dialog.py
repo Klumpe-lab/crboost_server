@@ -30,9 +30,9 @@ from ui.job_plugins._field_styles import PAGE_SECTION_STYLE
 from ui.local_file_picker import local_file_picker
 
 _MONO = "font-family: ui-monospace, monospace;"
-_HINT = "font-size: 10px; color: #94a3b8; line-height: 1.35;"
-_STATUS = "font-size: 10px; color: #475569; line-height: 1.35;"
-_STATUS_BAD = "font-size: 10px; color: #b45309; line-height: 1.35;"
+_HINT = "font-size: 10px; color: var(--cb-slate-400, #94a3b8); line-height: 1.35;"
+_STATUS = "font-size: 10px; color: var(--cb-slate-600, #475569); line-height: 1.35;"
+_STATUS_BAD = "font-size: 10px; color: var(--cb-amber-700, #b45309); line-height: 1.35;"
 _ROW_TMPL = "minmax(0, 1.5fr) minmax(0, 1fr) 84px 96px minmax(0, 1.4fr)"
 _MAX_ROWS = 300  # drawn; every row still counts and imports
 # The stored value of p = 1, as the import can name it; "" reads it off each file.
@@ -77,7 +77,7 @@ def open_segmentation_import_dialog(backend, project_path, on_done: Callable[[],
                     "Point the field above at a folder of .mrc volumes, or a glob."
                     if not files
                     else "Nothing to register from that source."
-                ).style("font-size: 11px; color: #9ca3af; padding: 10px;")
+                ).style("font-size: 11px; color: var(--cb-gray-400, #9ca3af); padding: 10px;")
                 return
             with (
                 ui.element("div").classes("cb-ltable-row cb-ltable-head").style(f"grid-template-columns: {_ROW_TMPL};")
@@ -91,21 +91,25 @@ def open_segmentation_import_dialog(backend, project_path, on_done: Callable[[],
                     .style(f"grid-template-columns: {_ROW_TMPL}; cursor: default;")
                 ):
                     ui.label(r["name"]).classes("cb-ltable-name").tooltip(r["path"])
-                    ui.label(r.get("ts") or "—").style(f"{_MONO} font-size: 10px; color: #64748b;")
-                    ui.label(r.get("feature") or "—").style(f"{_MONO} font-size: 10px; color: #475569;")
+                    ui.label(r.get("ts") or "—").style(f"{_MONO} font-size: 10px; color: var(--cb-slate-500, #64748b);")
+                    ui.label(r.get("feature") or "—").style(
+                        f"{_MONO} font-size: 10px; color: var(--cb-slate-600, #475569);"
+                    )
                     enc = r.get("encoding") or "—"
                     if r.get("dtype"):
                         enc_tip = f"{r['dtype']}, values {r['vmin']:g} … {r['vmax']:g}"
                     else:
                         enc_tip = "not read"
-                    ui.label(enc).style(f"{_MONO} font-size: 10px; color: #64748b;").tooltip(enc_tip)
+                    ui.label(enc).style(f"{_MONO} font-size: 10px; color: var(--cb-slate-500, #64748b);").tooltip(
+                        enc_tip
+                    )
                     if r["ok"]:
                         ui.label("registers").style(_STATUS)
                     else:
                         ui.label(r["reason"]).style(_STATUS_BAD + " white-space: normal;")
             if len(rows) > _MAX_ROWS:
                 ui.label(f"… and {len(rows) - _MAX_ROWS} more, not drawn; they count all the same.").style(
-                    "font-size: 11px; color: #b45309; padding: 6px 10px;"
+                    "font-size: 11px; color: var(--cb-amber-700, #b45309); padding: 6px 10px;"
                 )
         n_ok = sum(1 for r in rows if r["ok"])
         counts.set_text(f"{n_ok} to register · {len(rows) - n_ok} skipped" if rows else "")
@@ -280,7 +284,9 @@ def open_segmentation_import_dialog(backend, project_path, on_done: Callable[[],
             for b in batches:
                 with ui.row().classes("items-center w-full gap-2 no-wrap").style("padding: 1px 0;"):
                     ui.label(b.label).classes("cb-detail-meta")
-                    ui.label(", ".join(b.features)).style(f"{_MONO} font-size: 11px; color: #475569;")
+                    ui.label(", ".join(b.features)).style(
+                        f"{_MONO} font-size: 11px; color: var(--cb-slate-600, #475569);"
+                    )
                     ui.label(f"{b.n_volumes} volume(s)").classes("cb-detail-meta").tooltip(b.source or "—")
                     if len(recons) > 1 and b.recon_instance:
                         ui.label(recons.get(b.recon_instance, b.recon_instance)).classes("cb-detail-meta")
@@ -291,7 +297,9 @@ def open_segmentation_import_dialog(backend, project_path, on_done: Callable[[],
 
     with dialog_host(), ui.dialog().props("persistent") as dialog:
         with ui.card().style("min-width: 760px; max-width: 920px; gap: 0; padding: 16px 18px 14px;"):
-            ui.label("Import segmentations").style("font-size: 14px; font-weight: 600; color: #1e293b;")
+            ui.label("Import segmentations").style(
+                "font-size: 14px; font-weight: 600; color: var(--cb-slate-800, #1e293b);"
+            )
             ui.label(
                 "Volumes segmented outside crboost, registered on this project's tomograms. They are read where "
                 "they are; nothing is copied."

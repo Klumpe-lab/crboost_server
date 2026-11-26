@@ -293,7 +293,7 @@ def render_files_tab(job_type: JobType, job_model, ui_mgr: UIStateManager):
     # Fills the job page's Files box: the list on a faint gray-blue pane, the preview on white.
     with ui.row().classes("w-full no-wrap").style("height: 100%; gap: 0;"):
         with ui.column().style(
-            "width: 35%; height: 100%; overflow-y: auto; gap: 0; background: #f8fafc; "
+            "width: 35%; height: 100%; overflow-y: auto; gap: 0; background: var(--cb-slate-50, #f8fafc); "
             "border-radius: var(--cb-r-md, 4px) 0 0 var(--cb-r-md, 4px);"
         ):
             with ui.row().classes("w-full items-center no-wrap px-3 py-1").style("gap: 6px;"):

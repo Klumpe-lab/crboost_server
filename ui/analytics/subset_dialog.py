@@ -116,7 +116,7 @@ async def open_subset_dialog(
         return out
 
     with dialog_host(), ui.dialog() as dlg, ui.card().style("width: 760px; max-width: 95vw; gap: 8px;"):
-        ui.label("New particle set").style("font-size: 13px; font-weight: 600; color: #0f172a;")
+        ui.label("New particle set").style("font-size: 13px; font-weight: 600; color: var(--cb-slate-900, #0f172a);")
         ui.label(
             "Rules apply top to bottom, each to what the rules above kept. The parent stays as it is; the new set "
             "records it, the rules and the funnel."
@@ -210,7 +210,7 @@ def _rule_row(r: _RuleRow, label: str, tip: str, defaults: SubsetDefaults, paren
 
     with ui.row().classes("w-full items-center gap-2 no-wrap").style("min-height: 22px;"):
         house_check(value=r.on, on_change=toggle)
-        ui.label(label).style("font-size: 10px; color: #334155; width: 170px;").tooltip(tip)
+        ui.label(label).style("font-size: 10px; color: var(--cb-slate-700, #334155); width: 170px;").tooltip(tip)
         match r.kind:
             case RuleKind.DEPTH_BAND:
                 house_number("", value=r.value, width="w-20", step=10, on_change=setter("value"))

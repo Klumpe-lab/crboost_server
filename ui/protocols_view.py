@@ -46,7 +46,10 @@ logger = logging.getLogger(__name__)
 _TICK_S = 15.0  # the view's poll re-reads the frozen copy (disk) → 15 s per CLAUDE.md
 _LIVE = (JobStatus.RUNNING, JobStatus.QUEUED)
 _GRID3 = "display: grid; grid-template-columns: max-content minmax(0, 1fr) minmax(0, 1fr); gap: 2px 14px; width: 100%;"
-_EDITED_CELL = "background: #fffbeb; border-radius: var(--cb-r-sm, 3px); padding: 0 4px; color: #b45309;"
+_EDITED_CELL = (
+    "background: var(--cb-amber-50, #fffbeb); border-radius: var(--cb-r-sm, 3px); padding: 0 4px; "
+    "color: var(--cb-amber-700, #b45309);"
+)
 
 
 # ── shared with the rail light ────────────────────────────────────────────────
@@ -227,7 +230,7 @@ class ProtocolsPage:
                             self._switcher_table(menu)
                     ui.element("div").classes("cb-jsep")
                     if p is None:
-                        ui.label(f"broken: {info.error}").style(TEXT + " color: #b91c1c;")
+                        ui.label(f"broken: {info.error}").style(TEXT + " color: var(--cb-red-700, #b91c1c);")
                     elif p.description:
                         ui.label(p.description).style(TEXT)
                     if origin is not None and origin.name == info.name:
@@ -378,9 +381,13 @@ class _ParamsView(FingerprintedView):
                     .classes("w-full items-center no-wrap")
                     .style("gap: 8px; padding: 4px 6px; min-height: 26px;")
                 ):
-                    ui.label(f"{index}.").style(f"{MONO} font-size: 9px; color: #94a3b8; width: 18px;")
-                    ui.label(str(title)).style(f"{FONT} font-size: 11px; font-weight: 600; color: #1e293b;")
-                    ui.label(iid).style(f"{MONO} font-size: 10px; color: #64748b;")
+                    ui.label(f"{index}.").style(
+                        f"{MONO} font-size: 9px; color: var(--cb-slate-400, #94a3b8); width: 18px;"
+                    )
+                    ui.label(str(title)).style(
+                        f"{FONT} font-size: 11px; font-weight: 600; color: var(--cb-slate-800, #1e293b);"
+                    )
+                    ui.label(iid).style(f"{MONO} font-size: 10px; color: var(--cb-slate-500, #64748b);")
                     if jm is None:
                         render_chip(
                             "stage", "removed", status="error", tooltip="This stage is no longer in the project"
@@ -440,7 +447,7 @@ class _ProtocolView(FingerprintedView):
         with ui.column().classes("w-full").style("gap: 10px;"):
             with _panel("Protocol as declared", str(info.bundle_dir)):
                 if p is None:
-                    ui.label(f"broken: {info.error}").style(TEXT + " color: #b91c1c;")
+                    ui.label(f"broken: {info.error}").style(TEXT + " color: var(--cb-red-700, #b91c1c);")
                 else:
                     kv_grid(
                         [("bundle", str(info.bundle_dir)), ("version", p.version), ("schema", p.schema_version)]
@@ -450,7 +457,7 @@ class _ProtocolView(FingerprintedView):
                         ui.expansion(f"{len(p.species)} species · {len(p.stages)} stages with their parameters")
                         .props("dense")
                         .classes("w-full cb-scroll-tight")
-                        .style(f"{FONT} font-size: 10px; color: #475569;")
+                        .style(f"{FONT} font-size: 10px; color: var(--cb-slate-600, #475569);")
                     ):
                         with ui.column().classes("w-full gap-0").style("padding: 0 4px 8px;"):
                             for sp in p.species:

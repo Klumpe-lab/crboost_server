@@ -159,15 +159,15 @@ GRID_CLICK_JS = (
 STRIP_PX = 200
 # Card column width per size step.
 TILT_CARD_PX = {"s": 90, "m": 130, "l": 190}
-_AMBER_TEXT = "#b45309"
-_RED_TEXT = "#be4343"
-_VIOLET_TEXT = "#6d28d9"
-_INDIGO_TEXT = "#4a3aa7"
-_MUTED = "#94a3b8"
-_LABEL = "#64748b"
+_AMBER_TEXT = "var(--cb-amber-700, #b45309)"
+_RED_TEXT = "var(--cb-x-be4343, #be4343)"
+_VIOLET_TEXT = "var(--cb-violet-700, #6d28d9)"
+_INDIGO_TEXT = "var(--cb-x-4a3aa7, #4a3aa7)"
+_MUTED = "var(--cb-slate-400, #94a3b8)"
+_LABEL = "var(--cb-slate-500, #64748b)"
 # A step darker inside the popover: small type on its gray panel.
-_POP_MUTED = "#475569"
-_POP_LABEL = "#334155"
+_POP_MUTED = "var(--cb-slate-600, #475569)"
+_POP_LABEL = "var(--cb-slate-700, #334155)"
 
 CONFIDENCE_TIP = "Confidence that this particular tilt should be excluded."
 
@@ -706,7 +706,7 @@ def _popover_html(s: TiltState, m: dict, vals: dict, outliers: set, bands: dict,
     what is not recorded. The rules live in the icons' and the legend's hovers."""
     esc = html.escape
     rows = [
-        f'<div style="font-weight:600;color:#0f172a;">{_signed(s.angle, 1)}° · tilt {s.number} '
+        f'<div style="font-weight:600;color:var(--cb-slate-900, #0f172a);">{_signed(s.angle, 1)}° · tilt {s.number} '
         f'<span style="{MONO} font-weight:400;color:{_POP_MUTED};">{esc(s.frame_id)}</span></div>'
     ]
     status = _status_line(s, threshold)
@@ -928,7 +928,9 @@ def _strip_html(ticks: list[tuple[TiltState, str]], span: tuple[float, float]) -
         return f"{(angle - lo) / width * 100:.2f}%"
 
     zero = (
-        f'<div style="position:absolute;left:{x(0.0)};top:0;bottom:0;width:1px;background:#e2e8f0;"></div>'
+        "<div "
+        f'style="position:absolute;left:{x(0.0)};top:0;bottom:0;width:1px;'
+        'background:var(--cb-slate-200, #e2e8f0);"></div>'
         if lo < 0 < hi
         else ""
     )
@@ -1085,7 +1087,7 @@ def tomogram_caption_html(group: dict) -> str:
         text += f' · <span style="color:{_AMBER_TEXT};font-weight:600;">{len(s.dark_in_use)} dark</span>'
     return (
         f'<span title="{html.escape(_caption_title(group))}" style="font-family:ui-monospace,monospace;'
-        f'font-size:9px;color:#64748b;white-space:nowrap;flex:0 0 auto;">{text}</span>'
+        f'font-size:9px;color:var(--cb-slate-500, #64748b);white-space:nowrap;flex:0 0 auto;">{text}</span>'
     )
 
 

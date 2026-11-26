@@ -63,7 +63,7 @@ from ui.job_plugins._field_styles import (
 from ui.job_plugins.default_renderer import render_default_params_card
 
 _OVERRIDE_NOTE = "Changing it here affects only this job instance — the species is not modified."
-_WARN_STYLE = HELPER_STYLE + " color: #b45309;"
+_WARN_STYLE = HELPER_STYLE + " color: var(--cb-amber-700, #b45309);"
 # Under the box of a field row.
 _NOTE_STYLE = f" margin: 0 0 4px {NOTE_INDENT}px;"
 # T, O and I lists used to keep far more than one rotation per orbit: what one at 12° tried, and the increment
@@ -477,4 +477,6 @@ def _absent_pointer(text: str) -> None:
     read as absent, not as defaulted."""
     with ui.row().classes("items-center gap-1 no-wrap").style(f"margin: -2px 0 4px {NOTE_INDENT}px;"):
         ui.icon("warning", size="11px").classes("text-amber-600")
-        ui.label(text).style("font-family: 'IBM Plex Sans', sans-serif; font-size: 9px; color: #b45309;")
+        ui.label(text).style(
+            "font-family: 'IBM Plex Sans', sans-serif; font-size: 9px; color: var(--cb-amber-700, #b45309);"
+        )

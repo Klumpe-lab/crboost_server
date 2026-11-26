@@ -207,7 +207,8 @@ def header(pr: Project, spec: CardSpec, *, on_method, on_discard, on_add, todo: 
             tokel = hrow(
                 3,
                 "height: 14px; padding: 0 5px; border-radius: var(--cb-tag-radius, 3px); "
-                "border: 1px solid var(--cb-btn-line, #b8cce0); background: #fff; cursor: pointer; flex-shrink: 0;",
+                "border: 1px solid var(--cb-btn-line, #b8cce0); background: var(--cb-white, #fff); cursor: pointer; "
+                "flex-shrink: 0;",
             ).classes("cb-bm-tok")
             with tokel:
                 text(spec.method, 9, INK, bold=True)
