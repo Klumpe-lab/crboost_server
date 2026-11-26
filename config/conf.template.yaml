@@ -146,6 +146,13 @@ job_resource_profiles:
     # The default QOS caps a job at 8 h; the time here can grow past that, so ask for g_medium (2 days).
     qos: "g_medium"
 
+  # A profile for one method, laid over its type's for the jobs running it (`<type>:<method>`; denoisetrain only).
+  # cryoCARE's TensorFlow 2.4 has no kernels for NVIDIA Blackwell (B200, sm_100) and trains on none (H48); predicting
+  # works. Where the partition has Blackwell cards, keep cryoCARE's training off them by their node features
+  # (CBE.next: avoid "b200|mig", its MIG slices being B200s):
+  # denoisetrain:cryoCARE:
+  #   avoid: "b200|mig"
+
   denoisepredict:
     gres: "gpu:1"
     mem: "16G"

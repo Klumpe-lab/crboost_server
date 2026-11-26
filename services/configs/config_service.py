@@ -20,7 +20,7 @@ from pathlib import Path
 from pydantic import BaseModel, ConfigDict, Field
 from typing import Any, Literal, get_args, get_origin
 
-from services.models_base import JobType
+from services.models_base import JobType, PROFILE_METHODS
 
 logger = logging.getLogger(__name__)
 
@@ -119,7 +119,8 @@ class JobResourceProfile(BaseModel):
     """
     Per-job-type SLURM resource defaults.  All fields are optional — only the
     fields present in conf.yaml override the global slurm_defaults.
-    Keys in conf.yaml must match JobType.value strings.
+    Keys in conf.yaml are JobType.value strings, or a type and one of its methods
+    (`denoisetrain:cryoCARE`, models_base.PROFILE_METHODS), laid over the type's profile.
     """
 
     partition: str | None = None
@@ -389,13 +390,26 @@ def _config_warnings(source: Path, layer: dict) -> list[str]:
         else f"{source}: unknown key {path}"
         for path in _unread_keys(Config, layer)
     ]
-    job_types = {jt.value for jt in JobType}
     warnings += [
-        f"{source}: job_resource_profiles.{name} is not a job type"
+        f"{source}: job_resource_profiles.{name} {problem}"
         for name in layer.get("job_resource_profiles") or {}
-        if name not in job_types
+        if (problem := _profile_name_problem(name))
     ]
     return warnings
+
+
+def _profile_name_problem(name: str) -> str | None:
+    """What is wrong with a resource profile's name: a job type (`denoisetrain`), or a job type and one of its
+    methods (`denoisetrain:cryoCARE`, PROFILE_METHODS). None when it names one."""
+    type_name, _, method = name.partition(":")
+    if type_name not in {jt.value for jt in JobType}:
+        return "is not a job type"
+    if not method:
+        return None
+    if JobType(type_name) not in PROFILE_METHODS:
+        return f"names a method, and {type_name} has no profiles by method"
+    methods = [m.value for m in PROFILE_METHODS[JobType(type_name)][1]]
+    return None if method in methods else f"is not a method of {type_name} ({', '.join(methods)})"
 
 
 class ConfigService:

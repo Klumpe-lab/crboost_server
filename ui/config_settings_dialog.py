@@ -421,7 +421,8 @@ def _grid_text(store: dict[str, Any], key: str, label: str) -> None:
 
 
 def _profile_row(job_key: str, profile: dict[str, Any]) -> None:
-    display = _JOB_LABELS.get(job_key, job_key)
+    type_key, _, method = job_key.partition(":")
+    display = _JOB_LABELS.get(type_key, type_key) + (f" · {method}" if method else "")
     with ui.element("div").style(
         f"{_ROW_BOX} display: grid; grid-template-columns: {_LABEL_W}px minmax(0, 1fr); gap: 8px; "
         "align-items: start; padding: 4px 16px;"

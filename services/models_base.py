@@ -209,6 +209,11 @@ class JobType(str, Enum):
 # Both write the same particles.star / optimisation_set.star envelope.
 PARTICLE_EXTRACTION_TYPES = frozenset({JobType.SUBTOMO_EXTRACTION, JobType.WARP_EXPORT})
 
+# Job types whose resource profile can differ by method, and the field holding the method: conf.yaml's
+# `job_resource_profiles["<type>:<method>"]` is laid over the type's own profile for the jobs running that method
+# (H48: cryoCARE's TensorFlow 2.4 trains on no B200, where IsoNet trains).
+PROFILE_METHODS: dict[JobType, tuple[str, type[Enum]]] = {JobType.DENOISE_TRAIN: ("denoise_method", DenoiseMethod)}
+
 
 @dataclass(frozen=True, slots=True)
 class InstanceId:

@@ -19,8 +19,8 @@ from services.computing.slurm_service import (
     gres_keeping_type,
     minutes_to_walltime,
 )
-from services.configs.config_service import SupervisorSlurmConfig, get_config_service
-from services.models_base import JobType, AcquisitionParams, JobCategory, JobStatus, MicroscopeParams
+from services.configs.config_service import JobResourceProfile, SupervisorSlurmConfig, get_config_service
+from services.models_base import JobType, AcquisitionParams, JobCategory, JobStatus, MicroscopeParams, PROFILE_METHODS
 
 if TYPE_CHECKING:
     from services.project_state import ProjectState
@@ -211,15 +211,9 @@ class AbstractJobParams(BaseModel):
 
         merged_data = defaults.model_dump()
 
-        # Layer 2: per-job-type resource profile from conf.yaml
-        if self.job_type is not None:
-            try:
-                profile = get_config_service().get_job_resource_profile(self.job_type.value)
-                if profile is not None:
-                    for field, value in profile.model_dump(exclude_none=True).items():
-                        merged_data[field] = value
-            except FileNotFoundError:
-                pass  # No conf.yaml (a checkout without preflight): no profiles to apply.
+        # Layer 2: the job type's resource profile from conf.yaml, then its method's
+        for profile in self._resource_profiles():
+            merged_data.update(profile.model_dump(exclude_none=True))
 
         # Layer 3: per-job user overrides
         if self.slurm_overrides:
@@ -239,25 +233,30 @@ class AbstractJobParams(BaseModel):
 
         merged_data = defaults.model_dump()
 
-        if self.job_type is not None:
-            try:
-                profile = get_config_service().get_job_resource_profile(self.job_type.value)
-                if profile is not None:
-                    for field, value in profile.model_dump(exclude_none=True).items():
-                        merged_data[field] = value
-            except FileNotFoundError:
-                pass  # No conf.yaml: no profiles to apply.
+        for profile in self._resource_profiles():
+            merged_data.update(profile.model_dump(exclude_none=True))
 
         return SlurmConfig(**merged_data)
 
     def has_resource_profile(self) -> bool:
-        """Whether this job type has a resource profile in conf.yaml."""
+        """Whether this job's type, or its method, has a resource profile in conf.yaml."""
+        return bool(self._resource_profiles())
+
+    def _resource_profiles(self) -> list[JobResourceProfile]:
+        """This job's resource profiles in conf.yaml, in the order they apply: its type's (`denoisetrain`), then its
+        method's (`denoisetrain:cryoCARE`, for the types in PROFILE_METHODS)."""
         if self.job_type is None:
-            return False
+            return []
+        names = [self.job_type.value]
+        if self.job_type in PROFILE_METHODS:
+            method = getattr(self, PROFILE_METHODS[self.job_type][0])
+            names.append(f"{self.job_type.value}:{getattr(method, 'value', method)}")
         try:
-            return get_config_service().get_job_resource_profile(self.job_type.value) is not None
+            service = get_config_service()
+            profiles = [service.get_job_resource_profile(name) for name in names]
         except FileNotFoundError:
-            return False  # No conf.yaml: no profiles.
+            return []  # No conf.yaml (a checkout without preflight): no profiles to apply.
+        return [profile for profile in profiles if profile is not None]
 
     def apply_slurm_preset(self, preset: SlurmPreset) -> None:
         """Flatten preset values into the overrides dictionary."""
