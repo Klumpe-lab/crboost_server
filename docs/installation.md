@@ -184,7 +184,10 @@ tools:
   reference are added automatically.
 - `tools` — `exec_mode: "container"` with `container_path`, or `exec_mode: "binary"` with `bin_path` (the
   folder holding the program, e.g. cisTEM's `simulate`). A tool without an entry only fails the jobs that
-  need it.
+  need it. `env` sets variables for every call of a tool, inside its image: what your nodes need that an
+  image cannot know, such as Open MPI's for RELION (`env: {OMPI_MCA_btl: "tcp,self"}` keeps MPI off shared
+  memory). The images' own settings (RELION's `HWLOC_COMPONENTS`, which keeps Open MPI from probing the
+  hardware) stay unless `env` names them.
 
 A user can override settings for themselves only in `~/.crboost/conf.yaml`.
 
@@ -225,8 +228,10 @@ tool path and bind folder exists; that SLURM and Apptainer are on PATH and every
 typo) are warnings. It doesn't check the tilt-filter weights or the ChimeraX image.
 
 `./crboost test` runs the same checks in seconds. `-m cluster` runs every configured tool in its
-container on a compute node, the way real jobs do, including a kernel launch on the GPU for the tools that use one. Test jobs go to
-`~/.crboost/selftest/`; a failure prints the command and the log files.
+container on a compute node, the way real jobs do, including a kernel launch on the GPU for the tools that use one. RELION
+starts two MPI ranks and needs them to talk; if MPI hangs on your nodes the test fails after 2 minutes, and
+`tools.relion.env` is where the fix goes. Test jobs go to `~/.crboost/selftest/`; a failure prints the command and
+the log files.
 
 </details>
 

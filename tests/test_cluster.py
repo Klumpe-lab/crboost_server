@@ -20,13 +20,34 @@ from services.computing.slurm_service import SlurmConfig, write_sbatch_script
 from services.configs.config_service import REPO_ROOT, get_config_service
 from services.jobs.spec import driver_launch_prefix
 
+# Class 3D and Refine 3D run relion_refine_mpi under the image's own mpirun, on one node. Two ranks start the same
+# way, and the follower's report to the leader ("Follower 1 runs on host") shows MPI started and the ranks talked.
+# On some sites' nodes MPI stops at its start, silently (hwloc probing the hardware, a transport the node lacks):
+# that fails here after 2 min instead of a job waiting forever. The fix is the site's, in conf.yaml (`tools.relion.env`,
+# docs/installation.md).
+RELION_MPI = (
+    "relion_refine --version || exit 1; "
+    "out=$(timeout 120 mpirun --oversubscribe --bind-to none -n 2 relion_refine_mpi 2>&1); "
+    'if [ $? -eq 124 ]; then echo "$out" | head -30 >&2; '
+    "echo \"relion MPI: 'mpirun -n 2 relion_refine_mpi' did not finish in 120 s. Open MPI stalls like this inside "
+    "MPI_Init, while hwloc discovers the node's hardware or while the ranks set up a transport between them. Set "
+    "Open MPI's variables for your nodes (HWLOC_COMPONENTS, OMPI_MCA_btl, OMPI_MCA_pml) under tools.relion.env in "
+    'config/conf.yaml (docs/installation.md section 3) and run the self-test again." >&2; exit 1; fi; '
+    "echo \"$out\" | grep -q 'Follower *1 *runs on host' && exit 0; "
+    'echo "$out" | head -30 >&2; '
+    "echo \"relion MPI: 'mpirun -n 2 relion_refine_mpi' ended without RELION's report that rank 1 runs on a host "
+    "(the follower sends it to rank 0 over MPI right after MPI_Init): MPI did not start, or the two ranks could not "
+    "exchange a message. Open MPI's own errors, if any, are above. Set the transports and components Open MPI may use "
+    "on your nodes (OMPI_MCA_btl, OMPI_MCA_pml, HWLOC_COMPONENTS) under tools.relion.env in config/conf.yaml "
+    '(docs/installation.md section 3) and run the self-test again." >&2; exit 1'
+)
+
 # The quickest call that proves each tool starts in its container on a compute node, the way the
 # pipeline calls it; the GPU tools also check that they see the GPU.
 PROBES = {
     # --dont_premultiply exists from Warp 2.0.0dev40 on; the Warp Export job needs it.
     "warp_aretomo": "nvidia-smi && WarpTools ts_export_particles --help 2>&1 | grep -q -- --dont_premultiply",
-    # Refine 3D runs relion_refine_mpi under the container's own mpirun.
-    "relion": "relion_refine --version && command -v mpirun && command -v relion_refine_mpi",
+    "relion": RELION_MPI,
     "pytom": "pytom_match_template.py --help && python -c 'import cupy; assert int(cupy.arange(8).sum()) == 28'",
     "cryocare": "python -c 'import cryocare, tensorflow as tf; assert tf.config.list_physical_devices(\"GPU\")'",
     "isonet": "isonet.py --help",

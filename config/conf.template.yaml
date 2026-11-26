@@ -400,6 +400,12 @@ gpu_kernel_cache: ""
 # exec_mode: 'container' or 'binary'
 # container_path: path to .sif file (required if exec_mode is container)
 # bin_path: directory holding the tool's executables, put first on PATH (required if exec_mode is binary)
+# env: variables set for every call of the tool, inside its image (after the image's own) or before its binaries,
+#   for what your nodes need that an image cannot know: MPI's settings above all. RELION's image sets
+#   HWLOC_COMPONENTS="-linuxio,-pci,-gl" itself (Open MPI's hardware probes hang on some GPU nodes) and keeps it
+#   unless env names it. E.g. ranks on a node talking over TCP instead of shared memory, under `relion:`
+#     env: {OMPI_MCA_btl: "tcp,self"}
+#   `./crboost test -m cluster` starts two RELION MPI ranks with it; a hang fails there after 2 min.
 # A tool with no entry here fails the job that needs it; nothing falls back to a guessed binary.
 tools:
   warp_aretomo:

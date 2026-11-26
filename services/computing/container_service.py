@@ -58,6 +58,11 @@ def _container_env(cache_root: Path, gpu_kernel_cache: str = "") -> dict[str, st
     return env
 
 
+def _tool_exports(env: dict[str, str]) -> list[str]:
+    """conf.yaml's `tools.<name>.env`, as the shell lines that set it."""
+    return [f"export {name}={shlex.quote(value)}" for name, value in env.items()]
+
+
 def _bind_list(paths: Iterable[str]) -> list[str]:
     """Existing paths, deduplicated, dropping any path already inside another bound one
     (every bind is at the same path, so an ancestor bind exposes it already)."""
@@ -86,7 +91,8 @@ class ContainerService:
                 raise ValueError(
                     f"Tool '{tool_name}': bin_path must be the directory holding its executables, got {tool.bin_path}"
                 )
-            return f"export PATH={shlex.quote(tool.bin_path)}:$PATH; {command}"
+            exports = [f"export PATH={shlex.quote(tool.bin_path)}:$PATH", *_tool_exports(tool.env)]
+            return f"{'; '.join(exports)}; {command}"
 
         if not tool.container_path:
             raise ValueError(f"Tool '{tool_name}' runs in a container but has no container_path in config/conf.yaml")
@@ -113,6 +119,9 @@ class ContainerService:
             # cannot load them (CBE.next's EL10 libGL needs a newer glibc than Ubuntu 20.04 has).
             first = ":".join(shlex.quote(d) for d in tool.image_libs_first)
             exports.append(f"export LD_LIBRARY_PATH={first}:$LD_LIBRARY_PATH")
+        # The site's own, last: inside the image, after its %environment, so a variable named there wins over the
+        # image's value and every other one stays the image's.
+        exports += _tool_exports(tool.env)
         env = "; ".join(exports)
         parts = [
             cfg.config.container_runtime.value,

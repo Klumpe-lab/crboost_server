@@ -13,11 +13,12 @@ touching the shared file that everyone else's server reads.
 
 import copy
 import logging
+import re
 import shutil
 import yaml
 from enum import StrEnum
 from pathlib import Path
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from typing import Any, Literal, get_args, get_origin
 
 from services.models_base import JobType, PROFILE_METHODS
@@ -160,13 +161,34 @@ class ToolConfig(BaseModel):
     holding a binary tool's executables, put first on PATH for its calls. `cache_dir` is the
     host directory of a tool's downloaded model weights, for the tools that keep them outside
     the image (easymode). `image_libs_first` are directories inside the image put ahead of the
-    host libraries `--nv` mounts: for an image too old for the host's GL libraries."""
+    host libraries `--nv` mounts: for an image too old for the host's GL libraries. `env` are
+    variables set for every call of the tool, inside its image or before its binaries: what a
+    site's nodes need that an image cannot know, MPI's settings above all (`OMPI_MCA_btl:
+    "tcp,self"`). A variable the image sets itself (RELION's HWLOC_COMPONENTS) keeps the image's
+    value unless `env` names it."""
 
     exec_mode: Literal["container", "binary"] = "container"
     container_path: str | None = None
     bin_path: str | None = None
     cache_dir: str | None = None
     image_libs_first: list[str] = Field(default_factory=list)
+    env: dict[str, str] = Field(default_factory=dict)
+
+    @field_validator("env", mode="before")
+    @classmethod
+    def _env_as_text(cls, value: Any) -> Any:
+        """Names a shell can export; numbers as their text (YAML reads `1` as a number). Anything else is refused by
+        name, a true/false above all: YAML's `yes` is True, and what the tool should read is not ours to guess."""
+        if not isinstance(value, dict):
+            return value
+        out = {}
+        for name, text in value.items():
+            if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
+                raise ValueError(f"env: {name!r} is not a variable name")
+            if isinstance(text, bool) or not isinstance(text, (str, int, float)):
+                raise ValueError(f"env.{name}: {text!r} is not text; quote it in conf.yaml")
+            out[name] = str(text)
+        return out
 
 
 class ContainerRuntime(StrEnum):
