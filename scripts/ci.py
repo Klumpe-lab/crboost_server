@@ -37,7 +37,7 @@ NOT_IMPORTED = ("agent/", "containers/", "docs/", "memory/", "scripts/", "tests/
 NOT_SHELL_CHECKED = ("docs/", "memory/")
 STEP_TIMEOUT_S = 900
 # The tests that need no site (marked `repo`).
-REPO_TESTS = ("tests/test_repo.py", "tests/test_subparticles.py")
+REPO_TESTS = ("tests/test_repo.py", "tests/test_subparticles.py", "tests/test_filament_seam.py")
 
 
 @dataclass

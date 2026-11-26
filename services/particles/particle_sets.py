@@ -70,6 +70,8 @@ class SetOp(StrEnum):
     SUBPARTICLES = "subparticles"
     # Each refined particle in every pose its symmetry (or its lattice's registrations) makes equal, same images
     EXPANSION = "expansion"
+    # A filament's segments on the registration of their lattice a vote over an expansion's scores chose
+    SEAM = "seam"
 
 
 class ParentRef(BaseModel):

@@ -234,12 +234,24 @@ def sentence(verb: str, a, state: ProjectState | None) -> str:
         else:
             how = "the operators of its point group"
         return f"Make the set {a.name}: {j(a.job)}'s particles in every pose of {how}, the same images"
+    if verb == "make_seam_set":
+        cut = f"pieces of {a.min_segments} segments or more" if a.min_segments else "every piece long enough to vote"
+        how = "the registration the rest of its piece voted" if a.held_out else "its piece's registration"
+        return (
+            f"Make the set {a.name}: {j(a.job)}'s scored segments, each on {how} ({cut}; units at "
+            f"{a.radius_ang} Å from the axis)"
+        )
     if verb == "make_subparticle_set":
         if a.twist_deg is not None or a.rise_ang is not None:
             where = f"a helix of {a.twist_deg}° and {a.rise_ang} Å at {a.radius_ang} Å from the axis"
+            if a.axial_repeat_ang is not None:
+                where += f", {a.axial_repeat_ang} Å along it"
+            if a.azimuth_deg is not None or a.axial_ang is not None:
+                where += f" (azimuth {a.azimuth_deg or 0}°, {a.axial_ang or 0} Å along the axis)"
         else:
             where = f"the {a.axis or 'direction ' + str(a.direction)} at {a.radius_ang} Å"
-        return f"Make the set {a.name}: the {a.species} sub-units of {j(a.job)}'s particles, on {where}"
+        of = f"the registered set {a.from_set}'s segments" if a.from_set else f"{j(a.job)}'s particles"
+        return f"Make the set {a.name}: the {a.species} sub-units of {of}, on {where}"
     text = _args_text(a)
     return verb.replace("_", " ").capitalize() + (f": {text}" if text else "")
 

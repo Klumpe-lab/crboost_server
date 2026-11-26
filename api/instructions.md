@@ -16,8 +16,8 @@ Families:
 - setting: set_params, set_slurm, set_input, reset_inputs, set_gain, set_tilt_filter
 - the STA kitchen: add_kitchen_sources, create_kitchen_subset and create_kitchen_group (from a recipe: filters,
   subsets, post-ops; or a subset of picks by uid), edit_/delete_ subsets and groups (picks added or taken out by
-  uid), make_kitchen_set (background: get_task), make_class_set, make_polarity_set, make_subparticle_set,
-  make_expansion_set; reads get_kitchen, list_kitchen_sources, plan_kitchen_set, get_polarity, get_subparticles,
+  uid), make_kitchen_set (background: get_task), make_{class,polarity,seam,subparticle,expansion}_set; reads
+  get_kitchen, list_kitchen_sources, plan_kitchen_set, get_polarity, get_seam, get_subparticles,
   plan_subparticle_set, plan_expansion_set.
   Every cut, subset and class comes from the user.
 - running: plan_run, then run; stop, cancel_job, stop_after_iteration, cancel_leftovers, predict_tilts

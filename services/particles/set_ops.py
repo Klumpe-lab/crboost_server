@@ -22,7 +22,7 @@ import pandas as pd
 import starfile
 
 from services.models_base import JobType
-from services.particles import analytics, filament_polarity, sites, subparticles
+from services.particles import analytics, filament_polarity, filament_seam, sites, subparticles
 from services.particles.analytics import fit_pick_plane, min_distances, plane_depth, tomogram_extents
 from services.particles.analytics_store import job_dir_of
 from services.particles.coords import CENTERED_COLS
@@ -36,8 +36,10 @@ from services.particles.particle_sets import (
     SetOp,
     SetLevel,
     allocate_id,
+    get_set,
     list_sets,
     publish_set,
+    set_read_by,
 )
 from services.particles.pick_merge import _greedy_drop_mask
 from services.particles.records import file_mtime
@@ -567,6 +569,252 @@ def create_polarity_set(
     return publish_set(project_path, pset, lambda out: table.write(rows, out))
 
 
+# ── Seam and register of filaments ───────────────────────────────────────────────────────────────
+
+
+def _seam_inputs(state, project_path: Path, class3d_instance: str):
+    """What a seam vote reads of a Class 3D that scored an expansion set: its last data star, the tomograms it
+    names, the expansion set it read and that set's lattice."""
+    from services.particles.class_readout import class3d_iterations
+    from services.subtomo_merge import _parse_optimisation_set
+
+    jm = (state.jobs or {}).get(class3d_instance)
+    if jm is None:
+        raise ValueError(f"no job {class3d_instance}")
+    if jm.job_type != JobType.CLASS3D:
+        raise ValueError(
+            f"{class3d_instance} is a {jm.job_type.value} job: a seam is voted on a Class 3D that scored an "
+            "expansion set (Skip alignment)"
+        )
+    set_id = set_read_by(jm)
+    scored_set = get_set(project_path, set_id) if set_id else None
+    if scored_set is None or scored_set.recipe.op != SetOp.EXPANSION:
+        raise ValueError(
+            f"{class3d_instance} did not read an expansion set: a seam is voted on the scores of every registration "
+            "of every segment (Make expansion set on the helical Refine 3D's Results, then a Class 3D with Skip "
+            "alignment on that set)"
+        )
+    expansion = sites.expansion_of(dict(scored_set.recipe.params.get("expansion") or {}))
+    job_dir = job_dir_of(state, project_path, class3d_instance)
+    if job_dir is None:
+        raise FileNotFoundError(f"{class3d_instance} has not run yet")
+    its = class3d_iterations(job_dir)
+    if not its:
+        raise FileNotFoundError(f"{class3d_instance} has written no iteration yet")
+    final = its[-1]
+    data = job_dir / f"run_it{final:03d}_data.star"
+    optset = job_dir / f"run_it{final:03d}_optimisation_set.star"
+    if not optset.exists():
+        raise FileNotFoundError(f"{optset.name} is missing; it names the tomograms these particles live in")
+    _particles, tomograms = _parse_optimisation_set(optset)
+    notes = []
+    if getattr(jm, "skip_align", None) is False:
+        notes.append(
+            f"{job_dir.name} aligned its particles: its scores are of poses it moved, not of the registrations"
+        )
+    if getattr(jm, "firstiter_cc", None) is True and final == 1:
+        notes.append(
+            f"{job_dir.name} scored by cross-correlation (First iteration CC on); the log-likelihood (off) weighs "
+            "each frequency by its noise and carries more of what tells the units apart"
+        )
+    return {
+        "job_dir": job_dir,
+        "data": data,
+        "tomograms": tomograms,
+        "iteration": final,
+        "scored_set": scored_set,
+        "expansion": expansion,
+        "notes": notes,
+        "species_id": getattr(jm, "species_id", "") or scored_set.species_id,
+    }
+
+
+def seam_start(project_path: Path, state, class3d_instance: str) -> dict[str, Any]:
+    """Whether a seam can be voted on this job (a Class 3D that read an expansion set of a lattice), and the
+    values its block starts from: those of the last seam set made of it, else the radius of the last helix site
+    given for a sub-unit of its species. A value nobody gave stays None."""
+    out: dict[str, Any] = {"applies": False, "radius_ang": None, "min_segments": None, "block_segments": None}
+    jm = (state.jobs or {}).get(class3d_instance)
+    if jm is None or jm.job_type != JobType.CLASS3D:
+        return out
+    set_id = set_read_by(jm)
+    scored_set = get_set(project_path, set_id) if set_id else None
+    if scored_set is None or scored_set.recipe.op != SetOp.EXPANSION:
+        return out
+    if (scored_set.recipe.params.get("expansion") or {}).get("kind") != sites.LATTICE:
+        return out
+    out.update(applies=True, scored_set=scored_set.id, scored_set_name=scored_set.name)
+    made = list_sets(project_path)
+    mine = [
+        ps
+        for ps in made
+        if ps.recipe.op == SetOp.SEAM and ps.recipe.parents and ps.recipe.parents[0].instance_id == class3d_instance
+    ]
+    if mine:
+        last = mine[-1].recipe.params
+        out.update({k: last.get(k) for k in ("radius_ang", "min_segments", "block_segments")})
+        return out
+    for ps in reversed(made):
+        site = ps.recipe.params.get("site") or {}
+        same_species = ps.recipe.params.get("parent_species") == scored_set.species_id
+        if ps.recipe.op == SetOp.SUBPARTICLES and same_species and site.get("kind") == sites.HELIX:
+            out["radius_ang"] = site.get("radius_ang")
+            break
+    return out
+
+
+def seam_vote(state, project_path: Path, class3d_instance: str, *, values: dict[str, Any]):
+    """The vote (`filament_seam.vote`) over a Class 3D's scores of an expansion set, with what it read. `values`:
+    `radius_ang` (where the units sit from the axis, the person's), and optionally `min_segments` and
+    `block_segments`."""
+    inputs = _seam_inputs(state, project_path, class3d_instance)
+    table = read_table(inputs["data"])
+    v = dict(values or {})
+    kwargs: dict[str, Any] = {"radius_ang": v.get("radius_ang"), "min_segments": v.get("min_segments")}
+    if v.get("block_segments") is not None:
+        kwargs["block_segments"] = v["block_segments"]
+    return filament_seam.vote(table.df, inputs["expansion"], **kwargs), inputs, table
+
+
+def _seam_pieces(pieces: pd.DataFrame) -> list[dict[str, Any]]:
+    return [
+        {
+            "tomo": str(r[filament_seam.TOMO_COL]),
+            "tube": str(r[filament_seam.TUBE_COL]),
+            "piece": str(r["piece"]).rsplit("#", 1)[-1],
+            "segments": int(r["segments"]),
+            "registration": int(r["k"]),
+            "halves_steps_apart": None if pd.isna(r["halves"]) else int(r["halves"]),
+            "own_vs_rest_steps": None if pd.isna(r["own_vs_rest"]) else float(r["own_vs_rest"]),
+            "verdict": str(r["verdict"]),
+            "why": str(r["why"]),
+        }
+        for _, r in pieces.iterrows()
+    ]
+
+
+def seam_readout(project_path: Path, state, class3d_instance: str, *, values: dict[str, Any]) -> dict[str, Any]:
+    """What the seam vote over a Class 3D's scores decides, for its Results and `get_seam`: the counts, whether
+    the vote means anything (`checks`), one row per piece of filament and the sets already made. Writes nothing."""
+    v, inputs, _table = seam_vote(state, project_path, class3d_instance, values=values)
+    made = [
+        ps
+        for ps in list_sets(project_path)
+        if ps.recipe.op == SetOp.SEAM and ps.recipe.parents and ps.recipe.parents[0].instance_id == class3d_instance
+    ]
+    return {
+        **v.counts,
+        "registrations": v.lattice.n,
+        "scored_set": inputs["scored_set"].id,
+        "lattice": inputs["expansion"].description,
+        "iteration": inputs["iteration"],
+        **v.params,
+        "checks": v.checks,
+        "notes": list(inputs["notes"]),
+        "per_piece": _seam_pieces(v.pieces),
+        "sets": [
+            {
+                "set": ps.id,
+                "name": ps.name,
+                "segments": ps.n_particles,
+                "held_out": bool(ps.recipe.params.get("held_out")),
+                "min_segments": ps.recipe.params.get("min_segments"),
+            }
+            for ps in made
+        ],
+    }
+
+
+def create_seam_set(
+    project_path: Path, state, *, class3d_instance: str, name: str, values: dict[str, Any], held_out: bool = True
+) -> ParticleSet:
+    """A new extracted set: the segments of every filament piece long enough to vote, each on the registration of
+    its lattice the vote chose (`filament_seam`): the same images, the pose and origin of that copy. With
+    `held_out` a segment takes the registration its piece voted without the segment's own block and that block's
+    neighbours, so an average of the set holds nothing its own noise chose; without it, the whole piece's. Pieces
+    shorter than `min_segments` are left out and counted. The vote's values are kept in the recipe."""
+    v, inputs, table = seam_vote(state, project_path, class3d_instance, values=values)
+    c = v.counts
+    if not c["decided"]:
+        raise ValueError(
+            f"no piece of filament in {inputs['job_dir'].name} has {v.params['min_segments']} segments on one lattice"
+        )
+    rows = filament_seam.registered_rows(v, table.df, held_out=held_out)
+    job_dir = inputs["job_dir"]
+    parent = ParentRef(
+        kind="job",
+        instance_id=class3d_instance,
+        output="class3d_data",
+        label=f"Class 3D {job_dir.name} it{inputs['iteration']:03d}",
+        particles_star=str(inputs["data"]),
+        tomograms_star=str(inputs["tomograms"]),
+        level=SetLevel.EXTRACTED,
+        species_id=inputs["species_id"],
+        mtime=file_mtime(inputs["data"]),
+    )
+    how = (
+        "each segment on the registration the rest of its piece voted"
+        if held_out
+        else "each segment on its piece's registration"
+    )
+    funnel = [
+        FunnelStep(
+            label=parent.label,
+            kept=c["segments"],
+            removed=0,
+            note=f"{len(table.df):,} scored copies, {v.lattice.n} to a segment",
+        ),
+        FunnelStep(
+            label="on its neighbour's lattice",
+            kept=c["segments"] - c["segments_left_out"],
+            removed=c["segments_left_out"],
+        ),
+        FunnelStep(
+            label=f"{c['decided']} of {c['pieces']} pieces of {v.params['min_segments']} segments or more",
+            kept=len(rows),
+            removed=c["segments_undecided"],
+            note=how,
+        ),
+    ]
+    by_length = {b["min_segments"]: b for b in v.checks.get("by_length", [])}
+    notes = list(inputs["notes"])
+    nearest = max((m for m in by_length if m <= v.params["min_segments"]), default=None)
+    if nearest is not None:
+        b = by_length[nearest]
+        notes.append(
+            f"the two halves of a piece of {nearest} segments or more, which share no data, label "
+            f"{b['sites_alike']:.0%} of the lattice's sites alike ({b['pieces']} pieces; 50 % when nothing is known)"
+        )
+    undecided = v.pieces[v.pieces["verdict"] != filament_seam.DECIDED]
+    pset = ParticleSet(
+        id=allocate_id(project_path, name),
+        name=name,
+        species_id=inputs["species_id"],
+        level=SetLevel.EXTRACTED,
+        recipe=Recipe(
+            op=SetOp.SEAM,
+            parents=[parent],
+            params={
+                **v.params,
+                "held_out": bool(held_out),
+                "scored_set": inputs["scored_set"].id,
+                "lattice": inputs["expansion"].description,
+                "iteration": inputs["iteration"],
+                "description": f"the segments of {job_dir.name} on their lattice's registration · {how}",
+            },
+        ),
+        n_particles=len(rows),
+        n_tomograms=rows[analytics.TOMO_COL].nunique(),
+        per_tomo=per_tomo_counts(rows),
+        funnel=funnel,
+        details={**c, "checks": v.checks, "undecided_pieces": _seam_pieces(undecided)},
+        notes=notes,
+        module=__name__,
+        tomograms_star=str(inputs["tomograms"]),
+    )
+    return publish_set(project_path, pset, lambda out: table.write(rows, out))
+
+
 # ── Sub-particles ────────────────────────────────────────────────────────────────────────────────
 
 # The jobs whose particles carry refined poses: what a sub-particle set is made of.
@@ -586,12 +834,36 @@ class RefinedParticles:
     species_id: str
 
 
-def refined_particles(state, project_path: Path, instance_id: str) -> RefinedParticles:
-    """The refined particles of a Refine 3D (its last data star) or an M refine. Raises FileNotFoundError when
-    the job has written none yet, ValueError for any other job."""
+def _registered_particles(state, project_path: Path, instance_id: str, set_id: str) -> RefinedParticles:
+    """A registered set (a seam vote's) as a sub-particle set's parent: segments of filaments, each on the
+    registration of its lattice the vote gave it, so a unit's site is the same in every one."""
+    pset = get_set(project_path, set_id)
+    if pset is None:
+        raise ValueError(f"no particle set {set_id}")
+    if pset.recipe.op != SetOp.SEAM:
+        raise ValueError(
+            f"{pset.name} is a {pset.recipe.op.value} set: sub-particles are made of a job's refined particles, or "
+            "of a set a seam vote registered"
+        )
+    made_of = pset.recipe.parents[0].instance_id if pset.recipe.parents else ""
+    if made_of != instance_id:
+        raise ValueError(f"{pset.name} was made of {made_of}'s scores, not of {instance_id}'s")
+    if not Path(pset.particles_star).exists():
+        raise FileNotFoundError(f"{pset.name}'s particles star is missing")
+    jm = (state.jobs or {}).get(instance_id)
+    job_type = getattr(jm, "job_type", JobType.CLASS3D)
+    return RefinedParticles(pset.as_parent(), job_type, "C1", True, None, pset.species_id)
+
+
+def refined_particles(state, project_path: Path, instance_id: str, *, from_set: str = "") -> RefinedParticles:
+    """The refined particles of a Refine 3D (its last data star) or an M refine; with `from_set`, the registered
+    set a seam vote over `instance_id`'s scores made. Raises FileNotFoundError when the job has written none yet,
+    ValueError for any other job."""
     from services.models_base import resolve_species
     from services.subtomo_merge import _parse_optimisation_set
 
+    if from_set:
+        return _registered_particles(state, project_path, instance_id, from_set)
     jm = (state.jobs or {}).get(instance_id)
     if jm is None:
         raise ValueError(f"no job {instance_id}")
@@ -691,8 +963,10 @@ def _sub_unit(state, species_id: str):
     return species
 
 
-def _place_subparticles(state, project_path: Path, instance_id: str, species_id: str, values: dict[str, Any]):
-    refined = refined_particles(state, project_path, instance_id)
+def _place_subparticles(
+    state, project_path: Path, instance_id: str, species_id: str, values: dict[str, Any], from_set: str = ""
+):
+    refined = refined_particles(state, project_path, instance_id, from_set=from_set)
     species = _sub_unit(state, species_id)
     if species_id == refined.species_id:
         raise ValueError(f"{species.name} is the species these particles are of: its sub-unit is another species")
@@ -733,11 +1007,11 @@ def _subparticle_funnel(refined: RefinedParticles, placement) -> list[FunnelStep
 
 
 def subparticle_plan(
-    project_path: Path, state, *, instance_id: str, species_id: str, values: dict[str, Any]
+    project_path: Path, state, *, instance_id: str, species_id: str, values: dict[str, Any], from_set: str = ""
 ) -> dict[str, Any]:
     """What `create_subparticle_set` would make, without writing: the site as it was understood, the counts and
     the funnel."""
-    refined, species, placement = _place_subparticles(state, project_path, instance_id, species_id, values)
+    refined, species, placement = _place_subparticles(state, project_path, instance_id, species_id, values, from_set)
     return {
         "site": placement.site.description,
         "site_text": placement.site.text(),
@@ -761,13 +1035,16 @@ def create_subparticle_set(
     name: str,
     values: dict[str, Any],
     measured_on: str = "",
+    from_set: str = "",
 ) -> ParticleSet:
     """A new coordinates set: the copies of one unit in every refined particle of `instance_id` (a Refine 3D or an
     M refine), each with its pose composed from its parent's, its parent's uid and its assembly's half-set
     (`subparticles.place`). `species_id` is the sub-unit's own species, whose symmetry and Ø the jobs on the set
     start from; `values` are the site's (`site_description`), `measured_on` the job whose map they were read
-    from. The whole site is kept in the recipe, so the set is made again exactly."""
-    refined, species, placement = _place_subparticles(state, project_path, instance_id, species_id, values)
+    from. With `from_set` the parents are the segments of a registered set (a seam vote over `instance_id`'s
+    scores): on one registration each, a site that holds a unit of the true repeat sits on the same unit in
+    every one. The whole site is kept in the recipe, so the set is made again exactly."""
+    refined, species, placement = _place_subparticles(state, project_path, instance_id, species_id, values, from_set)
     rows = placement.rows
     if rows.empty:
         raise ValueError("no copy of the unit is inside its tomogram; nothing to make a set of")
@@ -792,6 +1069,8 @@ def create_subparticle_set(
                 "site": site.description,
                 "measured_on": measured_on,
                 "parent_species": refined.species_id,
+                "job": instance_id,
+                "from_set": from_set,
                 "description": f"{species.name} of {job_dir} · {per}",
             },
         ),
@@ -1561,11 +1840,24 @@ def replay_set(project_path: Path, state, pset: ParticleSet) -> list[ParticleSet
             create_subparticle_set(
                 project_path,
                 state,
-                instance_id=r.parents[0].instance_id,
+                instance_id=r.parents[0].instance_id or str(r.params.get("job") or ""),
                 species_id=pset.species_id,
                 name=name,
                 values=site,
                 measured_on=str(r.params.get("measured_on") or ""),
+                from_set=str(r.params.get("from_set") or ""),
+            )
+        ]
+    if r.op == SetOp.SEAM:
+        keys = ("radius_ang", "min_segments", "block_segments")
+        return [
+            create_seam_set(
+                project_path,
+                state,
+                class3d_instance=r.parents[0].instance_id,
+                name=name,
+                values={k: r.params[k] for k in keys if r.params.get(k) is not None},
+                held_out=bool(r.params.get("held_out", True)),
             )
         ]
     if r.op == SetOp.EXPANSION:

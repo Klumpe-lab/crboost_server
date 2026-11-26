@@ -100,6 +100,18 @@ _VERBS: tuple[Verb, ...] = (
         h.get_polarity,
     ),
     Verb(
+        "get_seam",
+        "What the seam vote decides over a Class 3D that scored an expansion set of filament segments (Skip "
+        "alignment): per piece of filament the registration of its lattice its segments' scores chose (for a "
+        "microtubule, where the seam is and which monomer is alpha), how many steps apart its two halves voted, "
+        "and whether the vote means anything (checks: blocks that share no data against blocks of other "
+        "filaments; by_length: the share of sites the two halves of a piece label alike, a half when nothing is "
+        "known). Changes nothing.",
+        m.SeamIn,
+        "read",
+        h.get_seam,
+    ),
+    Verb(
         "get_subparticles",
         "What a Refine 3D's or an M refine's Sub-units block shows: whether its particles hold copies of a unit "
         "(a point group other than C1, or filament segments), the axes of its group a unit can sit on with the "
@@ -509,6 +521,17 @@ _VERBS: tuple[Verb, ...] = (
         m.MakePolaritySetIn,
         "write",
         h.make_polarity_set,
+    ),
+    Verb(
+        "make_seam_set",
+        "A particle set of a Class 3D's scored filament segments, each on the registration of its lattice the "
+        "seam vote chose (the same images, that copy's pose and origin): the frame in which a unit of the true "
+        "repeat, a tubulin dimer, sits at one site in every segment. Pieces of filament shorter than min_segments "
+        "are left out. Read get_seam first and show the user what it decides and how far the halves agree; the "
+        "radius and the length cut are theirs. A sub-particle set with from_set places the units.",
+        m.MakeSeamSetIn,
+        "write",
+        h.make_seam_set,
     ),
     Verb(
         "make_subparticle_set",

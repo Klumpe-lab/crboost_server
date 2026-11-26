@@ -1787,6 +1787,63 @@ class CryoBoostBackend:
         state.bump_registry_rev()
         return ok(set=pset)
 
+    # ── Seam and register of filaments (services/particles/filament_seam.py) ──
+
+    async def seam_start(self, project_path: Path, class3d_instance: str) -> dict[str, Any]:
+        """Whether a seam can be voted on this Class 3D and the values its block starts from
+        (set_ops.seam_start), as ok(start=…)."""
+        project_path = Path(project_path)
+        state = self.state_service.state_for(project_path)
+        try:
+            start = await asyncio.to_thread(set_ops.seam_start, project_path, state, class3d_instance)
+        except Exception as e:
+            logger.exception("Seam start of %s failed", class3d_instance)
+            return err(f"{type(e).__name__}: {e}")
+        return ok(start=start)
+
+    async def seam_readout(
+        self, project_path: Path, class3d_instance: str, *, values: dict[str, Any]
+    ) -> dict[str, Any]:
+        """What the seam vote over a Class 3D's scores of an expansion set decides (set_ops.seam_readout), as
+        ok(vote=…). Writes nothing."""
+        project_path = Path(project_path)
+        state = self.state_service.state_for(project_path)
+        try:
+            vote = await asyncio.to_thread(set_ops.seam_readout, project_path, state, class3d_instance, values=values)
+        except FileNotFoundError as e:
+            return err(str(e), code=ErrorCode.NOT_WRITTEN_YET)
+        except ValueError as e:
+            return err(str(e))
+        except Exception as e:
+            logger.exception("Seam vote of %s failed", class3d_instance)
+            return err(f"{type(e).__name__}: {e}")
+        return ok(vote=vote)
+
+    async def create_seam_set(
+        self, project_path: Path, *, class3d_instance: str, name: str, values: dict[str, Any], held_out: bool = True
+    ) -> dict[str, Any]:
+        """A new set of a filament's segments on the registration of their lattice the vote chose
+        (set_ops.create_seam_set)."""
+        project_path = Path(project_path)
+        state = self.state_service.state_for(project_path)
+        try:
+            pset = await asyncio.to_thread(
+                set_ops.create_seam_set,
+                project_path,
+                state,
+                class3d_instance=class3d_instance,
+                name=name,
+                values=values,
+                held_out=held_out,
+            )
+        except (ValueError, FileNotFoundError, FileExistsError) as e:
+            return err(str(e))
+        except Exception as e:
+            logger.exception("Seam set of %s failed", class3d_instance)
+            return err(f"{type(e).__name__}: {e}")
+        state.bump_registry_rev()
+        return ok(set=pset)
+
     # ── Sub-particles (services/particles/subparticles.py, roadmap 71) ──
 
     async def subparticle_readout(self, project_path: Path, instance_id: str) -> dict[str, Any]:
@@ -1804,7 +1861,7 @@ class CryoBoostBackend:
         return ok(readout=readout)
 
     async def subparticle_plan(
-        self, project_path: Path, *, instance_id: str, species_id: str, values: dict[str, Any]
+        self, project_path: Path, *, instance_id: str, species_id: str, values: dict[str, Any], from_set: str = ""
     ) -> dict[str, Any]:
         """What a sub-particle set of these values would hold (set_ops.subparticle_plan), as ok(plan=…). Writes
         nothing."""
@@ -1818,6 +1875,7 @@ class CryoBoostBackend:
                 instance_id=instance_id,
                 species_id=species_id,
                 values=values,
+                from_set=from_set,
             )
         except FileNotFoundError as e:
             return err(str(e), code=ErrorCode.NOT_WRITTEN_YET)
@@ -1837,9 +1895,10 @@ class CryoBoostBackend:
         name: str,
         values: dict[str, Any],
         measured_on: str = "",
+        from_set: str = "",
     ) -> dict[str, Any]:
-        """A new coordinates set of the copies of one unit in a job's refined particles
-        (set_ops.create_subparticle_set)."""
+        """A new coordinates set of the copies of one unit in a job's refined particles, or in the segments of a
+        registered set made of its scores (set_ops.create_subparticle_set)."""
         project_path = Path(project_path)
         state = self.state_service.state_for(project_path)
         try:
@@ -1852,6 +1911,7 @@ class CryoBoostBackend:
                 name=name,
                 values=values,
                 measured_on=measured_on,
+                from_set=from_set,
             )
         except (ValueError, FileNotFoundError, FileExistsError) as e:
             return err(str(e))

@@ -263,10 +263,48 @@ class SubparticleSiteIn(JobIn):
         None, description="Filaments: where a unit sits along the axis from the box centre, in Å (omitted: 0)"
     )
     measured_on: str | None = Field(None, description="The job whose map these values were read from")
+    from_set: str | None = Field(
+        None,
+        description="Filaments: a registered set (make_seam_set) made of this job's scores, whose segments are "
+        "the parents instead of a job's refined particles. On one registration each, a helix whose "
+        "axial_repeat_ang is the true repeat (a microtubule's alpha/beta dimer) sits on the same unit in every "
+        "segment; the helix covers one turn and wraps opposite azimuth_deg, where the seam is",
+    )
 
 
 class MakeSubparticleSetIn(SubparticleSiteIn):
     name: str = Field(description="The set's name")
+
+
+class SeamIn(JobIn):
+    radius_ang: float = Field(
+        gt=0,
+        description="How far the lattice's units sit from the filament's axis, in Å, as measured on the user's map "
+        "(it turns a difference in angle between neighbouring segments into a distance)",
+    )
+    min_segments: int | None = Field(
+        None,
+        ge=1,
+        description="A piece of filament is registered when it has this many segments on one lattice; the user's "
+        "cut, from get_seam's by_length (the share of sites a piece's two halves label alike). Omitted: the least "
+        "a held-out vote needs, four blocks",
+    )
+    block_segments: int | None = Field(
+        None,
+        ge=1,
+        description="Segments to a block: blocks one block apart must share no data, so a block spans what the "
+        "scoring reference reaches along the axis (5 when omitted: 410 Å of segments picked every 82 Å)",
+    )
+
+
+class MakeSeamSetIn(SeamIn):
+    name: str = Field(description="The set's name")
+    held_out: bool = Field(
+        True,
+        description="Each segment takes the registration its piece voted without the segment's own block and "
+        "that block's neighbours, so an average of the set holds nothing its own noise chose (the set that shows "
+        "whether the units are told apart). False: the whole piece's registration, the most accurate one",
+    )
 
 
 class ExpansionIn(JobIn):

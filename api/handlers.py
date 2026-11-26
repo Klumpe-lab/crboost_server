@@ -770,7 +770,7 @@ async def plan_subparticle_set(call: Call) -> dict[str, Any]:
     if problem:
         return problem
     res = await call.backend.subparticle_plan(
-        call.path, instance_id=a.job, species_id=a.species, values=_site_values(a)
+        call.path, instance_id=a.job, species_id=a.species, values=_site_values(a), from_set=a.from_set or ""
     )
     if res["success"]:
         res.update(res.pop("plan"))
@@ -791,6 +791,7 @@ async def make_subparticle_set(call: Call) -> dict[str, Any]:
         name=a.name,
         values=_site_values(a),
         measured_on=a.measured_on or "",
+        from_set=a.from_set or "",
     )
     if res["success"]:
         ps = res.pop("set")
@@ -801,6 +802,46 @@ async def make_subparticle_set(call: Call) -> dict[str, Any]:
             funnel=[f.model_dump() for f in ps.funnel],
             notes=list(ps.notes),
             site=ps.recipe.params.get("site"),
+        )
+    res["ui_url"] = call.url(View.JOB, a.job)
+    return res
+
+
+def _seam_values(a) -> dict[str, Any]:
+    keys = ("radius_ang", "min_segments", "block_segments")
+    return {k: getattr(a, k) for k in keys if getattr(a, k) is not None}
+
+
+async def get_seam(call: Call) -> dict[str, Any]:
+    """What the seam vote over a Class 3D's scores of an expansion set decides, as its Results show it."""
+    a = call.args
+    _jm, problem = call.job(a.job)
+    if problem:
+        return problem
+    res = await call.backend.seam_readout(call.path, a.job, values=_seam_values(a))
+    if res["success"]:
+        res.update(res.pop("vote"))
+    res["ui_url"] = call.url(View.JOB, a.job)
+    return res
+
+
+async def make_seam_set(call: Call) -> dict[str, Any]:
+    """A set of a filament's segments on the registration of their lattice the seam vote chose."""
+    a = call.args
+    _jm, problem = call.job(a.job)
+    if problem:
+        return problem
+    res = await call.backend.create_seam_set(
+        call.path, class3d_instance=a.job, name=a.name, values=_seam_values(a), held_out=a.held_out
+    )
+    if res["success"]:
+        ps = res.pop("set")
+        res.update(
+            set=ps.id,
+            name=ps.name,
+            picks=ps.n_particles,
+            funnel=[f.model_dump() for f in ps.funnel],
+            notes=list(ps.notes),
         )
     res["ui_url"] = call.url(View.JOB, a.job)
     return res

@@ -163,6 +163,19 @@ of its picks; Make set turns what a recipe keeps into a particle set of the home
    each particle in every pose its symmetry makes equal (a point group's operators; for filament segments the
    registrations of their lattice, `twist_deg`, `rise_ang`, `axial_repeat_ang` and `units_per_repeat`, all the
    user's). A Class 3D with Skip alignment on that set scores every copy against one reference.
+9. The seam and register of filaments: over such a Class 3D of a lattice's registrations (First iteration CC
+   off, so the scores are log-likelihoods), `get_seam(project, job, radius_ang)` says which registration each
+   piece of filament is on and whether the vote means anything: `checks.blocks` (blocks of a piece that share no
+   data against blocks of other filaments) and `checks.by_length` (the share of sites a piece's two halves label
+   alike, a half when nothing is known, by the least length kept). Show it; `radius_ang` (where the units sit
+   from the axis) and the length cut `min_segments` are the user's. `make_seam_set(project, job, name,
+   radius_ang, min_segments, held_out)` writes the segments on their registration; `held_out` (the default)
+   gives each segment the registration the rest of its filament voted, so an average of the set shows whether
+   the units are told apart without the segments' own noise in it. The units of the true repeat (a tubulin
+   dimer) are then a sub-particle set of that set: `make_subparticle_set(project, job, species, name,
+   from_set=<the set>, twist_deg, rise_ang, radius_ang, axial_repeat_ang=<the true repeat>, azimuth_deg,
+   axial_ang)`, the site read in the scoring reference's frame; its helix covers one turn and wraps opposite
+   `azimuth_deg`, which is where the seam must be.
 
 Verdicts on single picks, the review sample, and the choice between two reconstructions or sources of one tilt
 series stay in the kitchen: `get_kitchen` says when such a choice stops Make set; give the user the `ui_url`.
