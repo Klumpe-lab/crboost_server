@@ -207,6 +207,18 @@ def _set_denoiser(state: ProjectState, job_model, value: str) -> None:
         job_model.source_overrides["model_path"] = instance_override_key(JobType.DENOISE_TRAIN, name)
 
 
+def follow_model_input(state: ProjectState, job_model) -> None:
+    """A Denoise Predict whose model input names a train job takes that job's method and IsoNet deconv, as the
+    Denoiser sets them. For an input set another way (set_input, add_job's `reading`): without it a predict job
+    reading an IsoNet model keeps the cryoCARE it was made with (HOTFIXES H47)."""
+    if job_model.job_type != JobType.DENOISE_PREDICT:
+        return
+    train_id = override_instance_id((job_model.source_overrides or {}).get("model_path") or "")
+    train = state.jobs.get(train_id or "")
+    if train is not None and train.job_type == JobType.DENOISE_TRAIN:
+        _set_denoiser(state, job_model, f"train:{train_id}")
+
+
 def param_options(state: ProjectState, instance_id: str, name: str) -> list | None:
     """The values a parameter may take when its choices come from the project (a species' templates and masks,
     the project's segmented features, easymode's weights cache, the Denoiser), else None: a free value, checked
@@ -443,6 +455,7 @@ def set_input(
             return err("Not set: this source would close a loop — " + "; ".join(w.describe() for w in loop))
         job_model.source_overrides[slot] = source
         job_model.facet_choices.pop(slot, None)
+        follow_model_input(state, job_model)
     elif path is not None:
         job_model.source_overrides[slot] = f"manual:{path}"
     elif auto:

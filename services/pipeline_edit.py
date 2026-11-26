@@ -12,6 +12,7 @@ import logging
 from typing import Any
 
 from services.aggregation.extraction import apply_aggregation_overrides
+from services.job_params import follow_model_input
 from services.jobs import jobtype_paramclass
 from services.jobs.spec import JOB_SPEC_BY_TYPE, PHASE_PARTICLES, display_name, instance_display_name, instance_order
 from services.jobs.template_match import set_symmetry
@@ -318,6 +319,7 @@ def add_job(
                 pins.append({"job": instance_id, "slot": slot, "source": producer, "why": "after"})
     if reading:
         job_model.source_overrides.update(reading)
+        follow_model_input(state, job_model)
         for slot, key in reading.items():
             pins.append(
                 {"job": instance_id, "slot": slot, "source": override_instance_id(key) or key, "why": "reading"}
