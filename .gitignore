@@ -30,8 +30,12 @@ tmpOut/
 *.sif
 *.pth
 
-# Notes and scratch
+# Notes and scratch: the maintainer's, never part of the repo
 /notes/
+/memory/
+/docs/roadmaps/
+/docs/reports/
+/scripts/file_roadmap_issues.py
 q_*.md
 PLAN_*.md
 REPORT_*.md
