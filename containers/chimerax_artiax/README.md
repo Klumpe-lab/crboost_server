@@ -16,7 +16,7 @@ cluster filesystem. Designed for blitzing 40–80 tomograms in one persistent se
   `./launch_curation_vnc.sh g`). Use GL when you want responsive 3-D; CPU when GPU nodes are scarce.
 
 ## napari runs on its own worker
-napari is EisGreis, the lab's tomogram viewer, from its own install (conf.yaml `napari.eisgreis`). crboost starts it
+napari is EisGreis, a tomogram viewer, from its own install (conf.yaml `napari.eisgreis`). crboost starts it
 from a tomogram's `napari` chip with `containers/napari/desktop_session.sh`, on the site's remote desktop (conf.yaml
 `napari.sif_path`, the image its Open OnDemand desktop runs: TurboVNC, Xfce), and tells it what to show through
 `open.json` in the session dir (EisGreis's `docs/crboost-protocol.md`). The same viewer also runs in a user's own Open

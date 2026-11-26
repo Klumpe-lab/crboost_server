@@ -17,7 +17,6 @@ From: nvcr.io/nvidia/cuda:12.9.1-devel-ubuntu22.04
     Torch 2.8.0+cu129
     CUDA 12.9
     GPU sm_50-sm_100 + compute_100 PTX
-    Maintainer 34076599+rtviii@users.noreply.github.com
 
 %environment
     export RELION_HOME=/opt/relion-5.0

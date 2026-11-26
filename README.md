@@ -9,11 +9,10 @@ the processing (RELION, Warp/AreTomo, PyTOM, cryoCARE, IsoNet, easymode, …) as
 
 Your server runs on the cluster's headnode under your account; your browser reaches it through an SSH tunnel.
 
-**1. On the headnode**, start it from the folder CryoBoost is installed in (the lab:
-`/groups/<lab>/software/crboost_server`; elsewhere, ask whoever installed it):
+**1. On the headnode**, start it from the folder CryoBoost is installed in (ask whoever installed it):
 
 ```bash
-cd /groups/<lab>/software/crboost_server
+cd <install dir>
 ./crboost
 ```
 

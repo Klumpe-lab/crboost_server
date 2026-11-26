@@ -2,7 +2,7 @@
 
 Everything you need to develop with, or run, **miss-alignment** inside crboost.
 Grounded in a proven end-to-end run on real data
-(<project>, A100-40GB, 2026-07-02).
+(one tilt series, A100-40GB, 2026-07-02).
 
 ---
 
@@ -28,13 +28,12 @@ coarse alignment) and `tsReconstruct` with **zero format conversion**.
 
 ---
 
-## 2. Where it lives (lab)
+## 2. Where it lives
 
 | thing | path |
 |---|---|
-| SIF | `/groups/<lab>/software/containers/sifs/miss_alignment_torch2.8.0_cuda12.9.sif` |
-| def (lab) | `/groups/<lab>/software/containers/defs/miss_alignment_torch2.8.0_cuda12.9.def` |
-| def (repo) | `container_defs/miss_alignment_torch2.8.0_cuda12.9.def` |
+| SIF | `<site's image folder>/miss_alignment_torch2.8.0_cuda12.9.sif` |
+| def | `container_defs/miss_alignment_torch2.8.0_cuda12.9.def` |
 
 **Build notes.** `ubuntu:22.04` + miniforge, Python 3.12, **`cuda-runtime=12.9`**
 (NOT the full `cuda-toolkit` — that drags in the Nsight Qt/X11 GUI stack and makes
@@ -274,7 +273,7 @@ Three kinds of process run during it, each on its own CPU core (miss-alignment 0
 ```
 
 The trainers can only consume what the builders produce and the loaders deliver, and both are
-single-threaded Python (`torch.set_num_threads(1)`), mostly CPU work. Measured on Grid2 (A100 nodes,
+single-threaded Python (`torch.set_num_threads(1)`), mostly CPU work. Measured on one project (A100 nodes,
 1024² stacks, 2026-10-14/15):
 
 | Layout | Pool | Trainer GPU | Per step | Limit |
@@ -330,9 +329,9 @@ The SLURM tab of a missAlign job carries a short form of this as a note (`MissAl
 
 ## 9. Proven-working setup (smoke test, 2026-07-02)
 
-- Data: `crboost_data/<project>`, `External/job004/warp_tiltseries` (single TS).
-- Node: `<node>`, A100-40GB, apptainer 1.1.9.
-- Binds: `-B "$WORK":/work -B /groups/<lab>/crboost_data:/groups/<lab>/crboost_data:ro`
+- Data: one project's `External/job004/warp_tiltseries` (single TS).
+- Node: A100-40GB, apptainer 1.1.9.
+- Binds: `-B "$WORK":/work -B <project base>:<project base>:ro`
   (source **read-only**, all output to the `$WORK` copy).
 - Sequence: copy `warp_tiltseries/` + `.settings` → **stamp dims** → `miss-alignment
   train` (1-entry `iteration_settings`, `max_epochs_per_iteration: 2`,

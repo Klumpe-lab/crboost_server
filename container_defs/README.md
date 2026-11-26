@@ -1,10 +1,10 @@
 # Container images
 
 One Apptainer definition per image the tools run in (`config/conf.yaml`, `tools.<tool>.container_path`; napari and
-ChimeraX are started by the curation worker). A site pulls the images and does not build them (roadmap 63 D20); the
+ChimeraX are started by the curation worker). A site pulls the images and does not build them; the
 defs are how they are made, and CI builds every one of them to show they still build.
 
-## One recipe (roadmap 63 D17, D19)
+## One recipe
 
 Every def built after 2026-11-25 has the same shape, which `tests/test_repo.py` checks:
 
@@ -76,8 +76,7 @@ sbatch -p c -c 16 --mem 160G -t 3:00:00 -o build_%j.log --wrap \
 
 1. Its build passes (the checks in `%post`).
 2. `./crboost test -m cluster -k <tool>` from a checkout whose `config/conf.yaml` names the new image.
-3. One real job's tool commands rerun with the old and the new image on the same inputs, outputs compared (roadmap 63
-   §7 lists what was compared for each image).
+3. One real job's tool commands rerun with the old and the new image on the same inputs, outputs compared.
 
 ## Bringing an image to a site
 

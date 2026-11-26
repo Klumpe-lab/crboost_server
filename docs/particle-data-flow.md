@@ -5,8 +5,7 @@ three questions that keep coming back: what is the actual difference between Tem
 matching, Pick candidates and Subtomo extraction; which STAR file carries which fact; and
 what has to agree before two sets of picks may be united.
 
-Written 2026-08-22 alongside `docs/roadmaps/completed/picking_ui/roadmap_12-aggregate-candidates.md`, which
-depends on every fact below. Update the two together.
+Written 2026-08-22 with the aggregation of candidates, which depends on every fact below.
 
 ---
 
@@ -131,8 +130,7 @@ There are exactly two ways a coordinate comes into existence, and they meet.
 
 ### ② Pick candidates — `tmextractcand` · `pytom_extract_candidates.py`
 
-Named "Template extract" until 2026-08-16. It extracts nothing; it picks. The rename was
-peeve P-03.
+Named "Template extract" until 2026-08-16. It extracts nothing; it picks.
 
 ```
   ┌────────────────────────────────────────────────────────────────────┐
@@ -179,7 +177,7 @@ peeve P-03.
            Its input is a directory of .mrc score maps. It cannot be
            handed a coordinate list — there would be nothing for it
            to do. This is why "aggregate candidates" does not spawn
-           a Pick candidates job. See roadmap 12.
+           a Pick candidates job.
 ```
 
 ### The plateau where both paths meet
@@ -302,7 +300,7 @@ tilt-series star cannot hold: `drivers/warp_bridge.py` computes `warp_trajectori
 the tilt images (Reconstruct particle, CTF refine, ③) and names it in the set it hands on (`warp_optimisation_set.star`;
 ③'s output set keeps it). RELION matches it by `rlnTomoParticleName`, so a file holding more particles serves a subset;
 relion_refine ignores it on 2D stacks and carries the line into its own output set, as CTF refine does. Without it,
-those jobs cut missAligned data 8–17 Å off (HOTFIXES H26).
+those jobs cut missAligned data 8–17 Å off.
 
 ---
 
@@ -414,7 +412,7 @@ L1 additionally registers a `PickList` so the merge gets a chip on the picks sur
      ────────────────────────────────────────────────────────────────
      flip_tiltseries_hand differing between projects mirrors Z.
      Every imported pick lands on the wrong side of the section.
-     This is the capsid chirality cascade. It is silent. It must raise.
+     It is silent. It must raise.
 ```
 
 ### 5b. Pixel grade
@@ -445,7 +443,7 @@ L1 additionally registers a `PickList` so the merge gets a chip on the picks sur
      particles.star claiming a single box for stacks that are
      physically two different sizes.
 
-     These are promoted to CRITICAL. Roadmap 12, stage S0.
+     These are promoted to CRITICAL.
 ```
 
 ---

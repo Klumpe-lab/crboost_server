@@ -104,7 +104,7 @@ particles are good and *roughly* where/which-way each one sits — and you can l
 blob's center to better than a pixel. So the fine stage starts from good positions and
 just polishes them to high resolution. Coarse early ≠ sloppy later.
 
-### 3. This job — the capsid capsid (what actually happened)
+### 3. A real case — a large capsid (what actually happened)
 
 Your particles were saved at **fine pixels** (unbinned). You then ran the **sorting**
 step on them *at full resolution* — and it took ~2½ hours while only ever reaching ~17 Å

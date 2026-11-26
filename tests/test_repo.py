@@ -238,3 +238,46 @@ def test_images_build_with_crboosts_uv():
     build_env = (DEFS / "build_env.sh").read_text()
     assert f"/releases/download/{pinned}/uv-x86_64-unknown-linux-gnu.tar.gz" in build_env, pinned
     assert pinned_sum in build_env, pinned_sum
+
+
+# --- Only the product: no notes, no site's folders, no addresses ----------------------------------------------------
+
+# The maintainer's notes live in these folders of a checkout, ignored: a tracked file under them publishes it.
+NOTES = ("memory/", "docs/roadmaps/", "docs/reports/", "notes/")
+# What no tracked file holds. A placeholder (`/groups/<lab>/`) and the docs' example group (`mylab`) are no site's.
+SITE_TRACES = {
+    "a group's folder": re.compile(rb"/groups/(?!<|mylab/)[A-Za-z0-9_]"),
+    "a home folder": re.compile(rb"/users/[a-z]+\.[a-z]+"),
+    "a user's scratch folder": re.compile(rb"/scratch(?:-cbe)?/users/"),
+    "an e-mail address": re.compile(
+        rb"[A-Za-z0-9._%+-]+@(?!users\.noreply\.github\.com\b|example\.(?:com|org|net)\b)"
+        rb"[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}\b"
+    ),
+}
+
+
+def _tracked_files() -> list[str]:
+    run = subprocess.run(["git", "ls-files", "-z"], cwd=REPO, capture_output=True, check=True)
+    return [name for name in run.stdout.decode().split("\0") if name]
+
+
+def test_no_notes_are_tracked():
+    notes = [name for name in _tracked_files() if name.startswith(NOTES)]
+    assert not notes, f"notes are tracked; `git rm --cached` them: {notes[:10]}"
+
+
+def test_no_site_folders_or_addresses():
+    """The message names the file, the line and the kind, never the text: CI's log is public."""
+    found = []
+    for name in _tracked_files():
+        path = REPO / name
+        if path.is_symlink() or not path.is_file():
+            continue
+        data = path.read_bytes()
+        if b"\0" in data[:8192]:
+            continue
+        for kind, pattern in SITE_TRACES.items():
+            for match in pattern.finditer(data):
+                line = data.count(b"\n", 0, match.start()) + 1
+                found.append(f"{name}:{line}: {kind}")
+    assert not found, "\n".join(found)

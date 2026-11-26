@@ -1,22 +1,23 @@
 # Known bugs and pitfalls
 
 Things that have bitten more than once. One entry per problem: how it shows, where to look, why, what to do,
-and whether the code still lets it happen. Add the project path and date each time it is seen again, so the
-frequency is visible. Fixed entries stay, marked FIXED with the commit, until nobody remembers the symptom.
+and whether the code still lets it happen. Add the date and the kind of data each time it is seen again, so the
+frequency is visible (never a site path or a sample name: this file is public). Fixed entries stay, marked
+FIXED with the commit, until nobody remembers the symptom.
 
 ---
 
 ## 1. Warp per-tilt CTF fits diverge on low-dose tilts (fsMotionAndCtf `fs_ctf`, tsCtf `ts_ctf`)
 
-**Status:** ROOT CAUSE FOUND 2026-09-08 (experiment `<project>/tutorial_sta/ctf_fit_test.sbatch`; full log and
-decision tree in `docs/reports/copia/copia-ctf-fit-investigation.md`): the frame-series fit band `c_range_min_max 30:6` is too greedy for
+**Status:** ROOT CAUSE FOUND 2026-09-08 (experiment `<project>/tutorial_sta/ctf_fit_test.sbatch`): the frame-series
+fit band `c_range_min_max 30:6` is too greedy for
 2 e/Å² tilts; `30:10` fits all 28 images at 5.10–5.53 µm. Protocols and code defaults (fsMotionAndCtf, tsCtf) now use
 `30:10`; projects created earlier keep `30:6` in their job params. Driver-side guard still open. The first
 workaround tried, a tight defocus window (`4.0:6.5`), made it WORSE: see below.
 **Seen:** `copia-empiar12580-20260906-1319` (17 of 28 tilts wrong), `copia-empiar12580-20260908-1407` (22 of 28);
-also in v1 with Warp `2.0.0dev31`: `/groups/<lab>/user/<pi>/Processing/Copia/try2` (Position_11_2, 1.55 Å/px,
+also in CryoBoost v1 with Warp `2.0.0dev31`, on the same data (Position_11_2, 1.55 Å/px,
 3.2 e/Å² per tilt, same `30:6.0`/`1.1:8`): the 7 last-acquired tilts (|tilt| ≥ 27°) at 1.1–2.2 µm instead of ~5,
-carried unchanged into `ts_ctf`; only 7 of 39, so it still refined to 9.8 Å. Severity scales with per-tilt SNR.
+carried unchanged into `ts_ctf`; only 7 of 39, so it still refined. Severity scales with per-tilt SNR.
 **Fix verified:** `copia-empiar12580-20260908-1447` (protocol with `30:10`): all 28 tilts 5.15–5.58 µm, CTF fit resolution
 6.1–7.6 Å on every tilt, `ts_defocus_hand --check` −0.994 (a real verdict for the first time; = tutorial's flip).
 
@@ -59,11 +60,11 @@ error flips the CTF phase beyond ~20 Å, and those tilts cancel signal in every 
 tomo CTF refinement cannot rescue it (search range ±3000–6000 Å, errors up to 40 000 Å). Everything from
 extraction on must be re-run once the fits are right.
 
-**What the code should do (open).** Scoped as `docs/roadmaps/completed/roadmap_19-ctf-fit-outlier-check.md` (2026-09-09): an
+**What the code should do (open).** Planned 2026-09-09: an
 independent 1D defocus estimate per tilt from Warp's own `PS1D` / `TiltPS1D`, with the scan window and band
 read from the same XML (no dataset numbers in the check), a `diverged | unverifiable | ok` verdict per tilt in
 the registry, Journey and job tabs, job failure when a quarter of the series diverged, and the hand verdict
-marked unreliable on diverged fits. Projects A / C / the PI's try2 are its regression test. Do not ship
+marked unreliable on diverged fits. Projects A / C / the v1 run are its regression test. Do not ship
 `1.1:8` / `30:6` as dataset-independent defaults.
 
 ---
@@ -89,32 +90,30 @@ description and the UI label in GUI terms (order + 1 at oversampling 1).
 (`.staging/task_<ts>/warp_tiltseries/tiltstack/<ts>/<ts>.st` in the alignment job) in 256 characters. From a
 256-character path on, the `.tlt` is named after the path's tail from its 257th character (`t` at 257,
 `25_Position_1.st` at 272), or not written at all (256); 255 aligns. Measured with AreTomo2 alone from both Warp
-images at folder depths 120–230 (roadmap 63 §7). The series name is in that path three times, which is why the
-lab's projects broke at a name length; a project under a deeper base breaks with shorter names: the images test
-project under `/scratch/.../crboost_images/test_base/` lost its 38-character series. Alignment now also runs a
+images at folder depths 120–230. The series name is in that path three times, which is why projects broke at
+a name length; a project under a deeper base breaks with shorter names: a test project under a deep scratch
+folder lost its 38-character series. Alignment now also runs a
 series under the alias when its stack path would pass 255 (`ARETOMO_PATH_MAX`, `aretomo_stack_path`), and fails
 it with the reason when even the alias path would.
 **Status:** WORKED AROUND 2026-10-04; limit lowered to 43 on 2026-11-15 for AreTomo2. Alignment runs a name over
 43 characters under a short alias (`drivers/ts_alignment.py` `staged_ts_name`, `rename_alias_files`, limit
-`ARETOMO_TS_NAME_MAX = 43` in `services/configs/mdoc_service.py`). The alias itself works (the reruns of
+`ARETOMO_TS_NAME_MAX = 43` in `services/configs/mdoc_service.py`). The alias itself works (eight reruns on
 2026-11-15: every 45+-character name ran as `crbalias` and aligned).
 **2026-11-15, AreTomo2 (warp-2.0.0dev41_aretomo2-1.0.0 container):** the limit moved down by one. Every
-44-character name of the reruns failed — `<project>` 36 of 36,
-`<project>` 42 of 42 (`Position_<1–9>_<k>`) — with AreTomo2 itself succeeding and writing
+44-character name of those reruns failed — 36 of 36 in one project, 42 of 42 in another (`Position_<1–9>_<k>`) —
+with AreTomo2 itself succeeding and writing
 the angles to `<ts>_Imod/st` instead of `<ts>_Imod/<ts>_st.tlt`; every 42- and 43-character name aligned. Under
 the old limit of 44 those names were not aliased. Project creation no longer refuses long names (2026-10-27; it did from
 2026-10-04, `describe_long_ts_names`): the alias carries them. The first project that relies on it is the check —
 its alignment `task_*.out` says `runs as '<alias>'`, and `warp_tiltseries/<ts>.xml` must not carry
 `UnselectManual="True"`. Earlier: driver guard + creation warning 2026-09-09 (`warp_marked_unselected`). The AreTomo
 bug itself is not ours.
-**Seen:** `/groups/<lab>/crboost_data/copia-empiar12580-tutorial-20260909-1414` (2026-09-09), tilt-series name
+**Seen:** `copia-empiar12580-tutorial-20260909-1414` (2026-09-09), tilt-series name
 `copia-empiar12580-tutorial-20260909-1414_Position_1` (51 chars). The 42-char name of
 `copia-empiar12580-20260908-1447_Position_1` works.
-`/groups/<lab>/crboost_data/<project>` (2026-10-04): 84 of 163 series failed with
-`Could not find <ts>.tlt`, every one with a 45-character name; the 44-character names aligned.
-`/groups/<lab>/crboost_data/<project>` (2026-10-04): names of 46–49 characters,
-0 of 176 aligned, so the alignment job failed outright. Across all eight projects no name of 45 or more
-characters aligned.
+A project of 163 series (2026-10-04): 84 failed with `Could not find <ts>.tlt`, every one with a 45-character
+name; the 44-character names aligned. Another (2026-10-04): names of 46–49 characters, 0 of 176 aligned, so the
+alignment job failed outright. Across eight such projects no name of 45 or more characters aligned.
 
 **How it shows.** The tomogram preview (Warp's `<ts>_11.80Apx.png`, Journey, Tomograms view) shows the particle
 layer as a diagonal band instead of filling the field: the sample plane is inclined in the volume. Template
@@ -126,7 +125,7 @@ matching still finds ~1000 picks, so nothing downstream complains. The alignment
 −44.01 for nominal −32), `<AxisAngle>` unrefined. `tiltstack/<ts>/<ts>_Imod/`: the `.tlt` is there under a
 mangled name (`20260909-1414_Position_1.st`, 252 bytes = the 28 angles) instead of `<ts>_st.tlt`; `.xf` and
 `.xtilt` are fine. tsCtf then fits `PlaneNormal` ≈ 12° off z to absorb the missing tilt offset. At 45–49
-characters (one dataset) the `.tlt` was not written anywhere; `<ts>_Imod/` held only `_st.xf` and `_st.xtilt`. Since
+characters the `.tlt` was not written anywhere; `<ts>_Imod/` held only `_st.xf` and `_st.xtilt`. Since
 the 2026-09-09 driver guard such a series fails visibly: the alignment job drops it, its job log groups it
 under `WarpTools marked <ts> unselected`, and when no name is short enough the job fails.
 
@@ -153,7 +152,7 @@ default. Not fixed in AreTomo2 (no tool patches).
 
 **What happens.** Alignment (`aligntiltsWarp`, warp-2.0.0dev41_aretomo2-1.0.0) runs AreTomo2 on the tilts the
 committed verdict keeps. AreTomo2 segfaults (exit 139; WarpTools then aborts, `status -6` in the supervisor's drop
-list) when those tilts have a wide gap. AreTomo 1.0 aligned the same series. On the reruns (783 series),
+list) when those tilts have a wide gap. AreTomo 1.0 aligned the same series. On eight reruns (783 series),
 by the largest gap between kept tilts: 8 of 559 crashed at ≤ 3.5° (5 of them series the filter had emptied, which
 were still handed to AreTomo), 7 of 127 at 3.5–9.5°, 15 of 33 at 9.5–15.5°, 32 of 33 beyond. The holes were
 mostly tilts the model was unsure of (0.3 < P(bad) ≤ 0.9), which are many on data unlike its training set:

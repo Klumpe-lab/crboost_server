@@ -118,7 +118,6 @@ From: ubuntu:22.04
     which miss-alignment
 
 %labels
-    Author CryoBoost contributors
     Tool miss-alignment
     Torch 2.8.0
     CUDA 12.9
